@@ -38,7 +38,7 @@ def seed(email: str, name: str, password: str):
         db.add(admin)
         db.commit()
         db.refresh(admin)
-        print(f"✓ Admin criado com sucesso!")
+        print("Admin criado com sucesso!")
         print(f"  Email : {admin.email}")
         print(f"  Nome  : {admin.name}")
         print(f"  Role  : {admin.role.value}")

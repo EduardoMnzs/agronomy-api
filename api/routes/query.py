@@ -51,7 +51,14 @@ def run_query(
 
     for doc in kb_docs:
         if doc.index_path:
-            index_entries.append({"doc_id": doc.id, "doc_name": doc.name, "index_path": doc.index_path})
+            index_entries.append({
+                "doc_id": doc.id,
+                "doc_name": doc.name,
+                "index_path": doc.index_path,
+                "file_path": doc.file_path,
+                "description": doc.description,
+                "category": doc.category.value if doc.category else None,
+            })
 
     # Documentos do usuário
     if body.document_ids:
@@ -65,6 +72,7 @@ def run_query(
                     "doc_id": f"session_{doc.id}",
                     "doc_name": doc.original_filename,
                     "index_path": doc.index_path,
+                    "file_path": doc.file_path,
                 })
 
     if not index_entries:

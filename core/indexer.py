@@ -15,17 +15,28 @@ def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = No
     """
     Index a document using PageIndex engine.
     Returns the path to the generated JSON structure.
+
+    Always enables doc_description and node summaries so the router and tree
+    search in the query engine have the metadata they need.
     """
     from pageindex import page_index_main
     from pageindex.page_index_md import md_to_tree
     from pageindex.utils import ConfigLoader
 
-    model = llm_model or settings.LLM_MODEL
+    model = llm_model or settings.index_model
+    add_desc = "yes" if settings.ENABLE_DOC_DESCRIPTION else "no"
     index_path = _get_index_path(file_path, indexes_dir)
     index_path.parent.mkdir(parents=True, exist_ok=True)
 
     if file_path.suffix.lower() == ".pdf":
-        opt = ConfigLoader().load({"model": model})
+        opt = ConfigLoader().load({
+            "model": model,
+            "toc_check_page_num": 30,
+            "if_add_node_summary": "yes",
+            "if_add_node_text": "no",
+            "if_add_node_id": "yes",
+            "if_add_doc_description": add_desc,
+        })
         structure = page_index_main(str(file_path), opt)
     else:
         parser = get_parser(file_path)
@@ -40,8 +51,9 @@ def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = No
                 md_to_tree(
                     md_path=str(tmp_path),
                     if_thinning=False,
-                    if_add_node_summary=True,
-                    if_add_node_id=True,
+                    if_add_node_summary="yes",
+                    if_add_node_id="yes",
+                    if_add_doc_description=add_desc,
                     model=model,
                 )
             )
@@ -64,3 +76,8 @@ def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = No
 def load_index(index_path: str | Path) -> dict:
     with open(index_path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def get_doc_description(structure: dict) -> str:
+    """Return the generated description for a document, or empty string."""
+    return (structure.get("doc_description") or "").strip()

@@ -8,3 +8,4 @@ data/knowledge/files/
 data/knowledge/indexes/
 data/sessions/
 *.db
+logs/
