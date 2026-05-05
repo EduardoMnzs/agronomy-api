@@ -1,7 +1,9 @@
 from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Enum, Text
+import uuid
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Enum, Text, JSON
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, DeclarativeBase
 
 
@@ -59,6 +61,18 @@ class KnowledgeDocument(Base):
     indexed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     status = Column(Enum(IndexStatus), default=IndexStatus.queued, nullable=False)
     status_message = Column(Text, nullable=True)
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    title = Column(String(255), nullable=False)
+    messages = Column(JSON, nullable=False, default=list)
+    pinned = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class SessionDocument(Base):

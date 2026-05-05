@@ -4,7 +4,7 @@ from arq.connections import RedisSettings, create_pool
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import auth, documents, knowledge, query, users
+from api.routes import auth, conversations, documents, knowledge, query, users
 from core.config import settings
 from db.models import Base
 from db.session import engine
@@ -37,6 +37,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(knowledge.router)
+app.include_router(conversations.router)
 app.include_router(documents.router)
 app.include_router(query.router)
 app.include_router(users.router)
