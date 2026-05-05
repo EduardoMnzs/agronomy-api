@@ -10,14 +10,37 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
   api:
     build: .
     ports:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://agronomy:agronomy@db:5432/agronomy
+      - REDIS_URL=redis://redis:6379
     depends_on:
       - db
+      - redis
+    volumes:
+      - ./data:/app/data
+
+  worker:
+    build: .
+    command: arq worker.settings.WorkerSettings
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://agronomy:agronomy@db:5432/agronomy
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - db
+      - redis
     volumes:
       - ./data:/app/data
 

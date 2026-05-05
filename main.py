@@ -1,3 +1,6 @@
+from contextlib import asynccontextmanager
+
+from arq.connections import RedisSettings, create_pool
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,11 +11,20 @@ from db.session import engine
 
 Base.metadata.create_all(bind=engine)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.arq = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+    yield
+    await app.state.arq.close()
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

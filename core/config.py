@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Database
-    DATABASE_URL: str = "postgresql://agronomy:agronomy@localhost:5432/agronomy"
+    DATABASE_URL: str = "postgresql+psycopg2://agronomy:agronomy@localhost:5432/agronomy"
 
     # JWT
     SECRET_KEY: str = "change-me-in-production"
@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     AZURE_API_KEY: str = ""
     AZURE_API_BASE: str = ""
     AZURE_API_VERSION: str = ""
+
+    # Redis / ARQ
+    REDIS_URL: str = "redis://localhost:6379"
 
     # Paths
     DATA_DIR: str = "data"

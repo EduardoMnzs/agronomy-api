@@ -1,4 +1,3 @@
-import asyncio
 import json
 import tempfile
 from pathlib import Path
@@ -11,10 +10,11 @@ def _get_index_path(file_path: Path, indexes_dir: str) -> Path:
     return Path(indexes_dir) / (file_path.stem + "_structure.json")
 
 
-def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = None) -> Path:
+async def index_document_async(file_path: Path, indexes_dir: str, llm_model: str | None = None) -> Path:
     from pageindex import page_index_main
     from pageindex.page_index_md import md_to_tree
     from pageindex.utils import ConfigLoader
+    import asyncio
 
     model = llm_model or settings.index_model
     add_desc = "yes" if settings.ENABLE_DOC_DESCRIPTION else "no"
@@ -30,7 +30,8 @@ def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = No
             "if_add_node_id": "yes",
             "if_add_doc_description": add_desc,
         })
-        structure = page_index_main(str(file_path), opt)
+        loop = asyncio.get_event_loop()
+        structure = await loop.run_in_executor(None, page_index_main, str(file_path), opt)
     else:
         parser = get_parser(file_path)
         parsed = parser.parse(file_path)
@@ -40,17 +41,15 @@ def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = No
             tmp_path = Path(tmp.name)
 
         try:
-            structure = asyncio.run(
-                md_to_tree(
-                    md_path=str(tmp_path),
-                    if_thinning=False,
-                    if_add_node_summary="yes",
-                    summary_token_threshold=200,
-                    if_add_node_text="yes",
-                    if_add_node_id="yes",
-                    if_add_doc_description=add_desc,
-                    model=model,
-                )
+            structure = await md_to_tree(
+                md_path=str(tmp_path),
+                if_thinning=False,
+                if_add_node_summary="yes",
+                summary_token_threshold=200,
+                if_add_node_text="yes",
+                if_add_node_id="yes",
+                if_add_doc_description=add_desc,
+                model=model,
             )
             if isinstance(structure, dict):
                 structure["doc_name"] = file_path.name
@@ -65,6 +64,11 @@ def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = No
         json.dump(structure, f, indent=2, ensure_ascii=False)
 
     return index_path
+
+
+def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = None) -> Path:
+    import asyncio
+    return asyncio.run(index_document_async(file_path, indexes_dir, llm_model))
 
 
 def load_index(index_path: str | Path) -> dict:

@@ -37,19 +37,28 @@ class User(Base):
     session_documents = relationship("SessionDocument", back_populates="user")
 
 
+class IndexStatus(str, PyEnum):
+    queued = "queued"
+    processing = "processing"
+    done = "done"
+    error = "error"
+
+
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     original_filename = Column(String(512), nullable=False)
-    file_type = Column(String(20), nullable=False)  # pdf, docx, csv, xlsx, json
+    file_type = Column(String(20), nullable=False)
     file_path = Column(String(1024), nullable=False)
     index_path = Column(String(1024), nullable=True)
     category = Column(Enum(DocumentCategory), default=DocumentCategory.outro)
     description = Column(Text, nullable=True)
     indexed_at = Column(DateTime, nullable=True)
     indexed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    status = Column(Enum(IndexStatus), default=IndexStatus.queued, nullable=False)
+    status_message = Column(Text, nullable=True)
 
 
 class SessionDocument(Base):
