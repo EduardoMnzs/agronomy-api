@@ -12,13 +12,6 @@ def _get_index_path(file_path: Path, indexes_dir: str) -> Path:
 
 
 def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = None) -> Path:
-    """
-    Index a document using PageIndex engine.
-    Returns the path to the generated JSON structure.
-
-    Always enables doc_description and node summaries so the router and tree
-    search in the query engine have the metadata they need.
-    """
     from pageindex import page_index_main
     from pageindex.page_index_md import md_to_tree
     from pageindex.utils import ConfigLoader
@@ -52,12 +45,13 @@ def index_document(file_path: Path, indexes_dir: str, llm_model: str | None = No
                     md_path=str(tmp_path),
                     if_thinning=False,
                     if_add_node_summary="yes",
+                    summary_token_threshold=200,
+                    if_add_node_text="yes",
                     if_add_node_id="yes",
                     if_add_doc_description=add_desc,
                     model=model,
                 )
             )
-            # Inject original filename so citations reference the real file
             if isinstance(structure, dict):
                 structure["doc_name"] = file_path.name
                 structure["original_page_map"] = [
@@ -79,5 +73,4 @@ def load_index(index_path: str | Path) -> dict:
 
 
 def get_doc_description(structure: dict) -> str:
-    """Return the generated description for a document, or empty string."""
     return (structure.get("doc_description") or "").strip()

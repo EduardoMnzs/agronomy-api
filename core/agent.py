@@ -1,17 +1,3 @@
-"""
-Iterative retrieval agent.
-
-Given a question and a set of pre-routed DocContexts, the agent can call:
-  - list_documents()            : see the catalog with descriptions
-  - get_document(doc_id)        : metadata + top-level ToC
-  - get_document_structure(...) : full tree (or subtree at node_id)
-  - get_page_content(...)       : exact page range of a document
-
-It loops until it decides to produce a final answer or hits a cap.
-
-The final answer carries inline citations like [1], [2] and the agent reports
-which pages it used; the query engine maps those back to Source objects.
-"""
 from __future__ import annotations
 
 import json
@@ -25,6 +11,7 @@ from core.tree_tools import (
     tool_get_document,
     tool_get_document_structure,
     tool_get_page_content,
+    tool_search_document,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,22 +23,34 @@ utilizando exclusivamente o conteúdo dos documentos disponíveis. \
 Siga RIGOROSAMENTE este protocolo de ferramentas:
 
 1. Use list_documents() apenas se precisar lembrar o catálogo.
-2. Para cada documento candidato, chame get_document(doc_id) para ver a \
+2. Se a pergunta mencionar um nome específico (cultivar, produto, código), \
+chame search_document(doc_id, query) IMEDIATAMENTE para localizar o nó exato. \
+Use o trecho retornado para confirmar a informação sem precisar navegar a árvore.
+3. Para cada documento candidato, chame get_document(doc_id) para ver a \
 ToC de alto nível.
-3. Use get_document_structure(doc_id, node_id?) para navegar a árvore e \
+4. Use get_document_structure(doc_id, node_id?) para navegar a árvore e \
 identificar seções específicas. Prefira descer no node_id certo em vez de \
 baixar a árvore inteira.
-4. Chame get_page_content(doc_id, pages) com RANGES APERTADOS (ex.: '22-24', \
+5. Chame get_page_content(doc_id, pages) com RANGES APERTADOS (ex.: '22-24', \
 '5,8', '12'). NUNCA peça o documento inteiro. Se errar, tente outro range \
 com base no que leu.
-5. Antes de cada chamada de ferramenta, produza UMA frase explicando o motivo.
-6. Quando tiver evidência suficiente, responda em português SEM chamar mais \
+6. Antes de cada chamada de ferramenta, produza UMA frase explicando o motivo.
+7. Quando tiver evidência suficiente, responda em português SEM chamar mais \
 ferramentas. A resposta final deve:
    - Citar cada fato com marcadores inline no formato [doc_id:página], por \
 exemplo [3:27] para o documento de id 3 na página 27.
    - Se houver fórmulas ou tabelas nos documentos, aplicá-las aos dados do \
 usuário e mostrar o cálculo passo a passo.
    - Declarar explicitamente quando a resposta NÃO estiver nos documentos.
+   - NUNCA misturar dados de culturas, cultivares ou categorias diferentes. \
+Cada linha ou bloco de dados pertence exclusivamente à cultura/cultivar descrita \
+naquele bloco. Se um bloco contiver dados de múltiplas entradas, leia com \
+atenção qual linha corresponde exatamente ao item perguntado.
+   - Quando a pergunta usar "quantidade de períodos", "número de janelas" ou \
+expressão similar, responda com a CONTAGEM de blocos/linhas distintos (ex.: \
+"2 períodos"), NÃO com a duração somada em dias ou meses. Se a duração for \
+relevante como complemento, mencione-a DEPOIS da contagem, deixando claro que \
+são grandezas diferentes.
 
 Não invente fatos. Não responda fora dos documentos. Seja conciso e técnico."""
 
@@ -118,22 +117,39 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_document",
+            "description": (
+                "Busca por palavra-chave ou nome de cultivar/produto em todo o "
+                "conteúdo do documento (título, texto e resumo dos nós). "
+                "Use quando precisar localizar um item específico sem navegar "
+                "a árvore manualmente."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {"type": "string"},
+                    "query": {"type": "string", "description": "Termo a buscar"},
+                },
+                "required": ["doc_id", "query"],
+            },
+        },
+    },
 ]
 
 
 @dataclass
 class RetrievalTrace:
-    """Records every tool call the agent made and every page it read."""
-
     tool_calls: list[dict] = field(default_factory=list)
-    pages_read: list[dict] = field(default_factory=list)  # [{doc_id, page, title}]
+    pages_read: list[dict] = field(default_factory=list)
 
     def record_call(self, name: str, args: dict):
         self.tool_calls.append({"tool": name, "args": args})
 
     def record_pages(self, doc_id: str, payload: dict, doc_name: str, structure: list | dict):
-        pages = payload.get("pages") or []
-        for p in pages:
+        for p in payload.get("pages") or []:
             pg = p.get("page")
             if pg is None:
                 continue
@@ -146,8 +162,7 @@ class RetrievalTrace:
 
 
 def _find_section_title_for_page(tree, page: int) -> str | None:
-    """Find the deepest section whose [start_index, end_index] contains page."""
-    best: tuple[int, str] | None = None  # (depth, title)
+    best: tuple[int, str] | None = None
 
     def _walk(nodes, depth):
         nonlocal best
@@ -173,6 +188,38 @@ class AgentResult:
     answer: str
     trace: RetrievalTrace
     model_used: str
+
+
+_STOPWORDS = {
+    "de", "do", "da", "dos", "das", "o", "a", "os", "as", "e", "em", "para",
+    "com", "que", "no", "na", "nos", "nas", "um", "uma", "e", "se", "por",
+    "ao", "a", "the", "of", "in", "for", "and", "or", "quais", "qual",
+    "sao", "sao", "sao", "os", "periodos", "periodo", "periodo", "recomendados",
+    "recomendado", "cultura", "ciclo", "solo", "risco", "plantio", "dados",
+    "quiser", "plantar", "limitando", "meu", "seus", "respectivos", "disponiveis",
+    "disponivel", "grupos", "grupo", "quais", "qual", "quero", "preciso",
+    "informacoes", "informacao", "periodos", "periodo", "sobre", "para",
+}
+
+
+def _extract_keywords(question: str) -> list[str]:
+    import re
+    tokens = re.findall(r"[A-Za-zÀ-ÿ0-9]+", question)
+    meaningful = [t for t in tokens if len(t) >= 3 and t.lower() not in _STOPWORDS]
+
+    individual = list(dict.fromkeys(t for t in meaningful))
+    phrases2 = [" ".join(meaningful[i:i+2]) for i in range(len(meaningful)-1)]
+    phrases3 = [" ".join(meaningful[i:i+3]) for i in range(len(meaningful)-2)]
+
+    candidates = phrases3 + phrases2 + individual
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for kw in candidates:
+        if kw.lower() not in seen:
+            seen.add(kw.lower())
+            result.append(kw)
+    return result[:20]
 
 
 def _catalog_payload(doc_ctxs: dict[str, DocContext]) -> str:
@@ -222,6 +269,27 @@ def _dispatch_tool(
             pass
         return payload_str
 
+    if name == "search_document":
+        result_str = tool_search_document(ctx, args.get("query") or "")
+        logger.info("[search_document] result: %s", result_str[:2000])
+        try:
+            payload = json.loads(result_str)
+            for hit in payload.get("results") or []:
+                page_ref = hit.get("page", "?")
+                try:
+                    page_num = int(str(page_ref).split("-")[0])
+                except (ValueError, AttributeError):
+                    page_num = 1
+                trace.pages_read.append({
+                    "doc_id": ctx.doc_id,
+                    "doc_name": ctx.doc_name,
+                    "page": page_num,
+                    "title": hit.get("title") or "",
+                })
+        except Exception:  # noqa: BLE001
+            pass
+        return result_str
+
     return json.dumps({"error": f"ferramenta desconhecida: {name}"})
 
 
@@ -239,14 +307,55 @@ def run_agent(
         data_lines = "\n".join(f"- {k}: {v}" for k, v in user_data.items())
         user_block += f"\n\nDados fornecidos pelo usuário:\n{data_lines}"
 
-    # Seed the conversation with the catalog so the agent can start routing.
     catalog = _catalog_payload(doc_ctxs)
+
+    pre_search_blocks: list[str] = []
+    keywords = _extract_keywords(question)
+    for ctx in doc_ctxs.values():
+        for kw in keywords:
+            result_str = tool_search_document(ctx, kw)
+            try:
+                payload = json.loads(result_str)
+                hits = payload.get("results") or []
+                if not hits:
+                    continue
+                for hit in hits:
+                    page_ref = hit.get("page", "?")
+                    try:
+                        page_num = int(str(page_ref).split("-")[0])
+                    except (ValueError, AttributeError):
+                        page_num = 1
+                    trace.pages_read.append({
+                        "doc_id": ctx.doc_id,
+                        "doc_name": ctx.doc_name,
+                        "page": page_num,
+                        "title": hit.get("title") or "",
+                    })
+                block = f"[Busca por '{kw}' em '{ctx.doc_name}' (doc_id={ctx.doc_id})]:\n"
+                block += "\n---\n".join(
+                    f"Seção: {h.get('title')} | Página: {h.get('page')}\n{h.get('snippet','')}"
+                    for h in hits
+                )
+                pre_search_blocks.append(block)
+                break
+            except Exception:  # noqa: BLE001
+                pass
+
+    pre_search_text = ""
+    if pre_search_blocks:
+        pre_search_text = (
+            "\n\nResultados de busca pré-carregados (use estes trechos para responder "
+            "— só chame ferramentas se precisar de mais detalhes):\n\n"
+            + "\n\n".join(pre_search_blocks)
+        )
+
     messages: list[dict] = [
         {
             "role": "user",
             "content": (
                 f"Pergunta: {user_block}\n\n"
-                f"Catálogo de documentos disponíveis:\n{catalog}\n\n"
+                f"Catálogo de documentos disponíveis:\n{catalog}"
+                f"{pre_search_text}\n\n"
                 "Use as ferramentas para navegar na árvore e ler apenas os "
                 "trechos realmente relevantes antes de responder."
             ),
@@ -262,7 +371,6 @@ def run_agent(
         )
         tool_calls = getattr(msg, "tool_calls", None) or []
 
-        # Always record what the model said (with or without content)
         assistant_entry = {"role": "assistant", "content": msg.content or ""}
         if tool_calls:
             assistant_entry["tool_calls"] = [
@@ -293,6 +401,7 @@ def run_agent(
             trace.record_call(name, args)
             logger.info("[agent step=%d] %s(%s)", step, name, args)
             tool_output = _dispatch_tool(name, args, doc_ctxs, trace)
+            logger.info("[agent step=%d] output: %s", step, tool_output[:2000])
 
             messages.append({
                 "role": "tool",
@@ -300,7 +409,6 @@ def run_agent(
                 "content": tool_output,
             })
 
-    # Budget exhausted — force a final answer without tools
     messages.append({
         "role": "user",
         "content": (

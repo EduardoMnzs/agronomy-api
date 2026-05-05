@@ -1,5 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import APIRouter, Depends, Form, HTTPException, status
 from jose import JWTError
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -21,13 +20,18 @@ class RefreshRequest(BaseModel):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = authenticate_user(db, form.username, form.password)
+def login(
+    username: str = Form(...),
+    password: str = Form(...),
+    remember_me: bool = Form(False),
+    db: Session = Depends(get_db),
+):
+    user = authenticate_user(db, username, password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email ou senha incorretos")
 
     return TokenResponse(
-        access_token=create_access_token({"sub": str(user.id)}),
+        access_token=create_access_token({"sub": str(user.id)}, persistent=remember_me),
         refresh_token=create_refresh_token({"sub": str(user.id)}),
     )
 

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Retrieval behavior
     ROUTER_ENABLED: bool = True
     ENABLE_DOC_DESCRIPTION: bool = True
-    AGENT_MAX_TOOL_CALLS: int = 10
+    AGENT_MAX_TOOL_CALLS: int = 12
     AGENT_MAX_PAGES_PER_CALL: int = 8
     PROMPT_CACHE_ENABLED: bool = True
 

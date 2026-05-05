@@ -4,6 +4,7 @@ from parsers.base import BaseParser
 from parsers.csv_parser import CSVParser
 from parsers.docx_parser import DOCXParser
 from parsers.json_parser import JSONParser
+from parsers.md_parser import MDParser
 from parsers.pdf_parser import PDFParser
 from parsers.xlsx_parser import XLSXParser
 
@@ -13,6 +14,7 @@ _PARSERS: list[BaseParser] = [
     CSVParser(),
     XLSXParser(),
     JSONParser(),
+    MDParser(),
 ]
 
 SUPPORTED_EXTENSIONS = {ext for p in _PARSERS for ext in p.extensions}

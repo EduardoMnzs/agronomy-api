@@ -1,13 +1,3 @@
-"""
-Tree-navigation tools used by the retrieval agent.
-
-These mirror the three tool functions PageIndex exposes in its cookbook:
-  - get_document()            — metadata + top-level tree
-  - get_document_structure()  — full structure of one document
-  - get_page_content()        — content of specific pages / line ranges
-
-The agent calls them iteratively to perform reasoning-based retrieval.
-"""
 from __future__ import annotations
 
 import json
@@ -21,25 +11,20 @@ from core.indexer import load_index
 
 logger = logging.getLogger(__name__)
 
-
-# Max characters returned by get_page_content for a single call.
-# PDF pages are ~3-5k chars — this caps a request at ~8 pages of text.
 _MAX_CONTENT_CHARS = 40_000
 
 
 @dataclass
 class DocContext:
-    """One document loaded and ready to be navigated by the agent."""
-
     doc_id: str
     doc_name: str
     doc_description: str
-    file_path: str | None  # original PDF path, if available
-    structure: dict  # the JSON tree as stored on disk
+    file_path: str | None
+    structure: dict
     is_pdf: bool
     total_pages: int | None = None
-    pages_cache: list[str] | None = None  # lazy pdf text cache
-    touched_pages: set[int] = field(default_factory=set)  # pages actually fetched
+    pages_cache: list[str] | None = None
+    touched_pages: set[int] = field(default_factory=set)
 
     @property
     def root_structure(self) -> list | dict:
@@ -77,7 +62,6 @@ def build_context(entry: dict) -> DocContext:
 
 
 def _shallow_structure(tree, max_depth: int = 3):
-    """Return structure limited to max_depth, stripping heavy fields."""
     def _walk(nodes, depth):
         out = []
         if not isinstance(nodes, list):
@@ -113,16 +97,11 @@ def tool_get_document(ctx: DocContext) -> str:
     }
     if ctx.total_pages is not None:
         result["page_count"] = ctx.total_pages
-    # Include a short top-level ToC (depth=1) so the agent can orient itself
     result["top_level_sections"] = _shallow_structure(ctx.root_structure, max_depth=1)
     return json.dumps(result, ensure_ascii=False)
 
 
 def tool_get_document_structure(ctx: DocContext, node_id: str | None = None) -> str:
-    """
-    Return the tree structure (or subtree if node_id is given).
-    Always strips the 'text' field to save tokens.
-    """
     from pageindex.utils import create_node_mapping
 
     tree = ctx.root_structure
@@ -183,7 +162,6 @@ def _pdf_page_content(ctx: DocContext, page_nums: list[int]) -> list[dict]:
 
 
 def _non_pdf_page_content(ctx: DocContext, page_nums: list[int]) -> list[dict]:
-    """For non-PDF docs, pages are line numbers on the reconstructed markdown tree."""
     if not page_nums:
         return []
     min_l, max_l = min(page_nums), max(page_nums)
@@ -209,11 +187,97 @@ def _non_pdf_page_content(ctx: DocContext, page_nums: list[int]) -> list[dict]:
     return hits
 
 
+def tool_search_document(ctx: DocContext, query: str, max_results: int = 10) -> str:
+    import re as _re
+
+    q = query.lower().strip()
+    q_norm = _re.sub(r"[^a-z0-9\s]", " ", q).split()
+
+    def _title_exact(node: dict) -> bool:
+        return (node.get("title") or "").lower().strip() == q
+
+    def _title_contains_all_tokens(node: dict) -> bool:
+        title = _re.sub(r"[^a-z0-9\s]", " ", (node.get("title") or "").lower())
+        return all(tok in title for tok in q_norm)
+
+    def _any_title_match(nodes, fn) -> bool:
+        for n in nodes if isinstance(nodes, list) else [nodes]:
+            if isinstance(n, dict):
+                if fn(n):
+                    return True
+                if _any_title_match(n.get("nodes") or [], fn):
+                    return True
+        return False
+
+    tree = ctx.root_structure
+
+    if _any_title_match(tree if isinstance(tree, list) else [tree], _title_exact):
+        def _matches(node: dict) -> bool:
+            return _title_exact(node)
+    elif _any_title_match(tree if isinstance(tree, list) else [tree], _title_contains_all_tokens):
+        def _matches(node: dict) -> bool:  # noqa: F811
+            return _title_contains_all_tokens(node)
+    else:
+        def _matches(node: dict) -> bool:  # noqa: F811
+            return (
+                q in (node.get("title") or "").lower()
+                or q in (node.get("text") or "").lower()
+                or q in (node.get("summary") or "").lower()
+            )
+
+    def _any_child_matches(node: dict) -> bool:
+        for child in node.get("nodes") or []:
+            if _matches(child) or _any_child_matches(child):
+                return True
+        return False
+
+    def _page_ref(node: dict) -> str:
+        if node.get("start_index") is not None:
+            return f"{node['start_index']}-{node.get('end_index', node['start_index'])}"
+        if node.get("line_num") is not None:
+            return str(node["line_num"])
+        return "?"
+
+    results: list[dict] = []
+
+    def _content_lines(text: str) -> int:
+        return sum(1 for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#"))
+
+    def _walk(nodes):
+        for node in nodes or []:
+            if _matches(node):
+                if _any_child_matches(node):
+                    _walk(node.get("nodes") or [])
+                else:
+                    text = node.get("text") or node.get("summary") or ""
+                    if _content_lines(text) == 0 and node.get("nodes"):
+                        for child in node["nodes"]:
+                            child_text = child.get("text") or child.get("summary") or ""
+                            results.append({
+                                "node_id": child.get("node_id"),
+                                "title": child.get("title"),
+                                "page": _page_ref(child),
+                                "snippet": child_text,
+                            })
+                    else:
+                        results.append({
+                            "node_id": node.get("node_id"),
+                            "title": node.get("title"),
+                            "page": _page_ref(node),
+                            "snippet": text,
+                        })
+            else:
+                _walk(node.get("nodes") or [])
+
+    tree = ctx.root_structure
+    _walk(tree if isinstance(tree, list) else [tree])
+    return json.dumps(
+        {"doc_id": ctx.doc_id, "query": query, "results": results[:max_results]},
+        ensure_ascii=False,
+    )
+
+
 def tool_get_page_content(ctx: DocContext, pages: str, max_pages: int = 8) -> str:
-    """
-    Retrieve page content for a tight range.
-    pages format: '5-7', '3,8', '12'. max_pages caps the total pages returned.
-    """
     try:
         page_nums = _parse_pages(pages)
     except (ValueError, AttributeError) as e:
@@ -237,7 +301,6 @@ def tool_get_page_content(ctx: DocContext, pages: str, max_pages: int = 8) -> st
     except Exception as e:  # noqa: BLE001
         return json.dumps({"error": f"falha ao ler páginas: {e}"})
 
-    # Enforce character cap
     total_chars = 0
     trimmed: list[dict] = []
     for item in content:
