@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import shutil
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from arq import ArqRedis
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
+from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -15,6 +18,10 @@ from db.session import get_db
 from parsers.factory import SUPPORTED_EXTENSIONS
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+
+_DOWNLOAD_TOKEN_TTL_MIN = 15
+_TEXT_PREVIEW_TYPES = {"md", "json", "csv", "docx", "txt"}
+_MAX_PREVIEW_CHARS = 2_000_000
 
 
 class KnowledgeDocumentOut(BaseModel):
@@ -31,6 +38,11 @@ class KnowledgeDocumentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class KnowledgeDocumentDetail(KnowledgeDocumentOut):
+    url: str | None = None
+    content: str | None = None
+
+
 def _serialize(d: KnowledgeDocument) -> KnowledgeDocumentOut:
     return KnowledgeDocumentOut(
         id=d.id,
@@ -43,6 +55,47 @@ def _serialize(d: KnowledgeDocument) -> KnowledgeDocumentOut:
         status=d.status.value if d.status else "queued",
         status_message=d.status_message,
     )
+
+
+def _make_download_token(doc_id: int) -> str:
+    payload = {
+        "doc_id": doc_id,
+        "type": "download",
+        "exp": datetime.utcnow() + timedelta(minutes=_DOWNLOAD_TOKEN_TTL_MIN),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def _verify_download_token(token: str, doc_id: int) -> None:
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+    if payload.get("type") != "download" or int(payload.get("doc_id", -1)) != doc_id:
+        raise HTTPException(status_code=403, detail="Token não autorizado para este documento")
+
+
+def _read_text_preview(file_path: str, file_type: str) -> str | None:
+    path = Path(file_path)
+    if not path.exists():
+        return None
+
+    if file_type == "docx":
+        try:
+            from parsers.docx_parser import DOCXParser
+            parsed = DOCXParser().parse(path)
+            text = parsed.text
+        except Exception:
+            return None
+    else:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+
+    if len(text) > _MAX_PREVIEW_CHARS:
+        text = text[:_MAX_PREVIEW_CHARS] + "\n\n[... conteúdo truncado ...]"
+    return text
 
 
 @router.get("", response_model=list[KnowledgeDocumentOut])
@@ -99,6 +152,51 @@ def get_status(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get
     if not doc:
         raise HTTPException(status_code=404, detail="Documento não encontrado")
     return _serialize(doc)
+
+
+@router.get("/{doc_id}", response_model=KnowledgeDocumentDetail)
+def get_knowledge(
+    doc_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+
+    base = _serialize(doc).model_dump()
+    detail = KnowledgeDocumentDetail(**base)
+
+    ft = (doc.file_type or "").lower()
+
+    if ft == "pdf":
+        token = _make_download_token(doc.id)
+        detail.url = str(request.url_for("download_knowledge_file", doc_id=doc.id)) + f"?token={token}"
+    elif ft in _TEXT_PREVIEW_TYPES:
+        detail.content = _read_text_preview(doc.file_path, ft)
+
+    return detail
+
+
+@router.get("/{doc_id}/file", name="download_knowledge_file")
+def download_knowledge_file(
+    doc_id: int,
+    token: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    _verify_download_token(token, doc_id)
+
+    doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == doc_id).first()
+    if not doc or not doc.file_path:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+
+    path = Path(doc.file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
+    media_type = "application/pdf" if doc.file_type == "pdf" else "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=doc.original_filename)
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
