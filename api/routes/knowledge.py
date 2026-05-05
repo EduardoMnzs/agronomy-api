@@ -9,11 +9,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, require_admin
 from core.config import settings
-from db.models import DocumentCategory, IndexStatus, KnowledgeDocument, User
+from db.models import DocumentCategory, IndexStatus, KnowledgeDocument, QueryLog, User
 from db.session import get_db
 from parsers.factory import SUPPORTED_EXTENSIONS
 
@@ -52,6 +53,13 @@ class KnowledgeDocumentOut(BaseModel):
 class KnowledgeDocumentDetail(KnowledgeDocumentOut):
     url: str | None = None
     content: str | None = None
+
+
+class KnowledgeStats(BaseModel):
+    total_files: int
+    storage_used_bytes: int
+    total_queries: int
+    health_score: int
 
 
 def _serialize(d: KnowledgeDocument) -> KnowledgeDocumentOut:
@@ -136,6 +144,11 @@ async def upload_knowledge(
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    try:
+        file_size = file_path.stat().st_size
+    except OSError:
+        file_size = None
+
     doc = KnowledgeDocument(
         name=name,
         original_filename=file.filename,
@@ -146,6 +159,7 @@ async def upload_knowledge(
         description=description or None,
         indexed_by=admin.id,
         status=IndexStatus.queued,
+        file_size_bytes=file_size,
     )
     db.add(doc)
     db.commit()
@@ -155,6 +169,40 @@ async def upload_knowledge(
     await arq.enqueue_job("task_index_document", doc.id)
 
     return _serialize(doc)
+
+
+@router.get("/stats", response_model=KnowledgeStats)
+def get_stats(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    total_files, storage_used, done_count, error_count = db.query(
+        func.count(KnowledgeDocument.id),
+        func.coalesce(func.sum(KnowledgeDocument.file_size_bytes), 0),
+        func.sum(case((KnowledgeDocument.status == IndexStatus.done, 1), else_=0)),
+        func.sum(case((KnowledgeDocument.status == IndexStatus.error, 1), else_=0)),
+    ).one()
+
+    total_queries, failed_queries = db.query(
+        func.count(QueryLog.id),
+        func.sum(case((QueryLog.success.is_(False), 1), else_=0)),
+    ).one()
+
+    total_files = int(total_files or 0)
+    done_count = int(done_count or 0)
+    error_count = int(error_count or 0)
+    total_queries = int(total_queries or 0)
+    failed_queries = int(failed_queries or 0)
+
+    index_health = (done_count / total_files) if total_files else 1.0
+    query_health = (1 - failed_queries / total_queries) if total_queries else 1.0
+    health_score = round(100 * (0.7 * index_health + 0.3 * query_health))
+    if error_count and health_score == 100:
+        health_score = 99
+
+    return KnowledgeStats(
+        total_files=total_files,
+        storage_used_bytes=int(storage_used or 0),
+        total_queries=total_queries,
+        health_score=health_score,
+    )
 
 
 @router.get("/{doc_id}/status", response_model=KnowledgeDocumentOut)

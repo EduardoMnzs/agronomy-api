@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 
 import uuid
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Enum, Text, JSON
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Enum, Text, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, DeclarativeBase
 
@@ -61,6 +61,7 @@ class KnowledgeDocument(Base):
     indexed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     status = Column(Enum(IndexStatus), default=IndexStatus.queued, nullable=False)
     status_message = Column(Text, nullable=True)
+    file_size_bytes = Column(BigInteger, nullable=True)
 
 
 class Conversation(Base):
@@ -88,3 +89,21 @@ class SessionDocument(Base):
     expires_at = Column(DateTime, nullable=True)
 
     user = relationship("User", back_populates="session_documents")
+
+
+class QueryLog(Base):
+    __tablename__ = "query_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True)
+    question = Column(Text, nullable=False)
+    model_used = Column(String(128), nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    success = Column(Boolean, nullable=False, default=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_query_logs_created_success", "created_at", "success"),
+    )

@@ -243,19 +243,25 @@ def tool_search_document(ctx: DocContext, query: str, max_results: int = 10) -> 
     def _content_lines(text: str) -> int:
         return sum(1 for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#"))
 
-    def _walk(nodes):
+    def _walk(nodes, path: list[str]):
         for node in nodes or []:
+            title = node.get("title") or ""
+            next_path = path + [title] if title else path
             if _matches(node):
                 if _any_child_matches(node):
-                    _walk(node.get("nodes") or [])
+                    _walk(node.get("nodes") or [], next_path)
                 else:
                     text = node.get("text") or node.get("summary") or ""
+                    breadcrumb = " > ".join(next_path)
                     if _content_lines(text) == 0 and node.get("nodes"):
                         for child in node["nodes"]:
                             child_text = child.get("text") or child.get("summary") or ""
+                            child_title = child.get("title") or ""
+                            child_breadcrumb = " > ".join(next_path + [child_title]) if child_title else breadcrumb
                             results.append({
                                 "node_id": child.get("node_id"),
                                 "title": child.get("title"),
+                                "section_path": child_breadcrumb,
                                 "page": _page_ref(child),
                                 "snippet": child_text,
                             })
@@ -263,14 +269,15 @@ def tool_search_document(ctx: DocContext, query: str, max_results: int = 10) -> 
                         results.append({
                             "node_id": node.get("node_id"),
                             "title": node.get("title"),
+                            "section_path": breadcrumb,
                             "page": _page_ref(node),
                             "snippet": text,
                         })
             else:
-                _walk(node.get("nodes") or [])
+                _walk(node.get("nodes") or [], next_path)
 
     tree = ctx.root_structure
-    _walk(tree if isinstance(tree, list) else [tree])
+    _walk(tree if isinstance(tree, list) else [tree], [])
     return json.dumps(
         {"doc_id": ctx.doc_id, "query": query, "results": results[:max_results]},
         ensure_ascii=False,

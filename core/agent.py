@@ -46,6 +46,10 @@ usuário e mostrar o cálculo passo a passo.
 Cada linha ou bloco de dados pertence exclusivamente à cultura/cultivar descrita \
 naquele bloco. Se um bloco contiver dados de múltiplas entradas, leia com \
 atenção qual linha corresponde exatamente ao item perguntado.
+   - Resultados de search_document trazem o campo "section_path" (ex.: \
+"AMENDOIM > Zoneamento de Plantio"). Use ESTE caminho — e não apenas o título \
+do nó — para confirmar a qual cultura cada linha pertence. Se a pergunta é sobre \
+AMENDOIM e o section_path começa com outra cultura, DESCARTE o hit.
    - Quando a pergunta usar "quantidade de períodos", "número de janelas" ou \
 expressão similar, responda com a CONTAGEM de blocos/linhas distintos (ex.: \
 "2 períodos"), NÃO com a duração somada em dias ou meses. Se a duração for \
@@ -334,7 +338,8 @@ def run_agent(
                     })
                 block = f"[Busca por '{kw}' em '{ctx.doc_name}' (doc_id={ctx.doc_id})]:\n"
                 block += "\n---\n".join(
-                    f"Seção: {h.get('title')} | Página: {h.get('page')}\n{h.get('snippet','')}"
+                    f"Caminho: {h.get('section_path') or h.get('title')} | Página: {h.get('page')}\n"
+                    f"Seção: {h.get('title')}\n{h.get('snippet','')}"
                     for h in hits
                 )
                 pre_search_blocks.append(block)

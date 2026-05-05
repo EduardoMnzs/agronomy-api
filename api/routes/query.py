@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime
 
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
 from core.query_engine import QueryResult, query
-from db.models import Conversation, IndexStatus, KnowledgeDocument, SessionDocument, User
+from db.models import Conversation, IndexStatus, KnowledgeDocument, QueryLog, SessionDocument, User
 from db.session import get_db
 
 router = APIRouter(prefix="/query", tags=["query"])
@@ -103,13 +104,29 @@ def run_query(
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
 
-    result: QueryResult = query(
-        question=body.question,
-        index_entries=index_entries,
-        user_data=body.user_data,
-        model=body.model,
-        history=history,
-    )
+    started = time.monotonic()
+    try:
+        result: QueryResult = query(
+            question=body.question,
+            index_entries=index_entries,
+            user_data=body.user_data,
+            model=body.model,
+            history=history,
+        )
+    except Exception as exc:
+        _log_query(
+            db,
+            user_id=user.id,
+            conversation_id=body.conversation_id,
+            question=body.question,
+            model_used=body.model,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            success=False,
+            error_message=str(exc)[:1000],
+        )
+        raise
+
+    latency_ms = int((time.monotonic() - started) * 1000)
 
     sources_out = [
         SourceOut(ref=s.ref, doc_id=s.doc_id, doc_name=s.doc_name, page=s.page, section=s.section)
@@ -118,12 +135,55 @@ def run_query(
 
     conv = _upsert_conversation(db, user.id, body.conversation_id, body.question, result.answer, sources_out)
 
+    _log_query(
+        db,
+        user_id=user.id,
+        conversation_id=str(conv.id),
+        question=body.question,
+        model_used=result.model_used,
+        latency_ms=latency_ms,
+        success=True,
+        error_message=None,
+    )
+
     return QueryResponse(
         conversation_id=str(conv.id),
         answer=result.answer,
         sources=sources_out,
         model_used=result.model_used,
     )
+
+
+def _log_query(
+    db: Session,
+    *,
+    user_id: int | None,
+    conversation_id: str | None,
+    question: str,
+    model_used: str | None,
+    latency_ms: int,
+    success: bool,
+    error_message: str | None,
+) -> None:
+    try:
+        conv_uuid: uuid.UUID | None = None
+        if conversation_id:
+            try:
+                conv_uuid = uuid.UUID(conversation_id)
+            except ValueError:
+                conv_uuid = None
+        db.add(QueryLog(
+            user_id=user_id,
+            conversation_id=conv_uuid,
+            question=question[:4000],
+            model_used=(model_used or "")[:128] or None,
+            latency_ms=latency_ms,
+            success=success,
+            error_message=error_message,
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 def _upsert_conversation(
