@@ -23,6 +23,17 @@ _DOWNLOAD_TOKEN_TTL_MIN = 15
 _TEXT_PREVIEW_TYPES = {"md", "json", "csv", "docx", "txt"}
 _MAX_PREVIEW_CHARS = 2_000_000
 
+_MIME_TYPES = {
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "xls": "application/vnd.ms-excel",
+    "csv": "text/csv; charset=utf-8",
+    "json": "application/json; charset=utf-8",
+    "md": "text/markdown; charset=utf-8",
+    "txt": "text/plain; charset=utf-8",
+}
+
 
 class KnowledgeDocumentOut(BaseModel):
     id: int
@@ -170,10 +181,10 @@ def get_knowledge(
 
     ft = (doc.file_type or "").lower()
 
-    if ft == "pdf":
-        token = _make_download_token(doc.id)
-        detail.url = str(request.url_for("download_knowledge_file", doc_id=doc.id)) + f"?token={token}"
-    elif ft in _TEXT_PREVIEW_TYPES:
+    token = _make_download_token(doc.id)
+    detail.url = str(request.url_for("download_knowledge_file", doc_id=doc.id)) + f"?token={token}"
+
+    if ft in _TEXT_PREVIEW_TYPES:
         detail.content = _read_text_preview(doc.file_path, ft)
 
     return detail
@@ -195,8 +206,19 @@ def download_knowledge_file(
     if not path.exists():
         raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
 
-    media_type = "application/pdf" if doc.file_type == "pdf" else "application/octet-stream"
-    return FileResponse(path, media_type=media_type, filename=doc.original_filename)
+    ft = (doc.file_type or "").lower()
+    media_type = _MIME_TYPES.get(ft, "application/octet-stream")
+
+    download_name = doc.original_filename or doc.name or f"documento.{ft}"
+    if ft and not download_name.lower().endswith(f".{ft}"):
+        download_name = f"{Path(download_name).stem}.{ft}"
+
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=download_name,
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
