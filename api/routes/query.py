@@ -89,11 +89,26 @@ def run_query(
     if not index_entries:
         raise HTTPException(status_code=400, detail="Nenhum documento indexado disponível para consulta")
 
+    history: list[dict] = []
+    if conv := (
+        db.query(Conversation).filter(
+            Conversation.id == uuid.UUID(body.conversation_id),
+            Conversation.user_id == user.id,
+        ).first()
+        if body.conversation_id else None
+    ):
+        history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in (conv.messages or [])
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
+
     result: QueryResult = query(
         question=body.question,
         index_entries=index_entries,
         user_data=body.user_data,
         model=body.model,
+        history=history,
     )
 
     sources_out = [

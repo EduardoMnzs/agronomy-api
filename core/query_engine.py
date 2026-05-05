@@ -78,6 +78,7 @@ def query(
     index_entries: list[dict],
     user_data: dict | None = None,
     model: str | None = None,
+    history: list[dict] | None = None,
 ) -> QueryResult:
     """
     Main entry point. `index_entries` items must carry:
@@ -144,6 +145,7 @@ def query(
         doc_ctxs=doc_ctxs,
         user_data=user_data,
         model=used_model,
+        history=history,
     )
 
     # 4. Extract citations → Source list

@@ -298,6 +298,7 @@ def run_agent(
     doc_ctxs: dict[str, DocContext],
     user_data: dict | None = None,
     model: str | None = None,
+    history: list[dict] | None = None,
 ) -> AgentResult:
     used_model = model or settings.agent_model
     trace = RetrievalTrace()
@@ -349,7 +350,15 @@ def run_agent(
             + "\n\n".join(pre_search_blocks)
         )
 
-    messages: list[dict] = [
+    prior: list[dict] = []
+    if history:
+        for msg in history[-6:]:
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            if role in ("user", "assistant") and content:
+                prior.append({"role": role, "content": content})
+
+    messages: list[dict] = prior + [
         {
             "role": "user",
             "content": (
