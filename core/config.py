@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     USER_DOCS_INDEXES_DIR: str = "data/users/indexes"
     AVATARS_DIR: str = "data/avatars"
 
+    # Email (Resend)
+    RESEND_API_KEY: str = ""
+    FROM_EMAIL: str = ""
+    APP_BASE_URL: str = "http://localhost:5173"
+
     model_config = {"env_file": ".env", "extra": "allow"}
 
     def _runtime(self, key: str, default=None):

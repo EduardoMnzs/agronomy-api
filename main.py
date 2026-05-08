@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from api.routes import auth, conversations, documents, knowledge, my_documents, query, search as search_routes, settings as settings_routes, users
+from api.routes import access_requests, auth, conversations, documents, knowledge, my_documents, query, search as search_routes, settings as settings_routes, users
 from core.config import settings
 from db.models import Base, KnowledgeDocument
 from db.session import SessionLocal, engine
@@ -164,6 +164,7 @@ app.include_router(query.router)
 app.include_router(users.router)
 app.include_router(settings_routes.router)
 app.include_router(search_routes.router)
+app.include_router(access_requests.router)
 
 
 @app.get("/health")

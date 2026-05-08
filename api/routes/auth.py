@@ -1,10 +1,15 @@
+import hashlib
+import secrets
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends, Form, HTTPException, status
 from jose import JWTError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
-from db.models import User, UserStatus
+from core.config import settings
+from db.models import PasswordResetToken, User, UserStatus
 from db.session import get_db
 from services.auth import (
     authenticate_user,
@@ -14,6 +19,7 @@ from services.auth import (
     hash_password,
     verify_password,
 )
+from services.email import password_reset_email, send_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -74,6 +80,67 @@ def change_password(
     user.password_hash = hash_password(body.new_password)
     if user.status == UserStatus.pending:
         user.status = UserStatus.active
+    db.commit()
+
+
+_RESET_TOKEN_TTL_MIN = 30
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+@router.post("/forgot-password", status_code=status.HTTP_204_NO_CONTENT)
+def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Always returns 204, independentemente do e-mail existir — evita enumeração.
+    """
+    user = db.query(User).filter(User.email == body.email).first()
+    if user and user.status != UserStatus.inactive:
+        # invalida tokens antigos não usados
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        ).delete()
+        raw = secrets.token_urlsafe(32)
+        db.add(PasswordResetToken(
+            user_id=user.id,
+            token_hash=_hash_token(raw),
+            expires_at=datetime.utcnow() + timedelta(minutes=_RESET_TOKEN_TTL_MIN),
+        ))
+        db.commit()
+        base = settings.APP_BASE_URL.rstrip("/")
+        reset_url = f"{base}/reset-password?token={raw}"
+        subject, html, text = password_reset_email(user.full_name, reset_url)
+        send_email(user.email, subject, html, text)
+    return None
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=6, max_length=255)
+
+
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    row = db.query(PasswordResetToken).filter(
+        PasswordResetToken.token_hash == _hash_token(body.token)
+    ).first()
+    if not row or row.used_at is not None or row.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Token inválido ou expirado")
+
+    user = db.query(User).filter(User.id == row.user_id).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Token inválido ou expirado")
+
+    user.password_hash = hash_password(body.new_password)
+    if user.status == UserStatus.pending:
+        user.status = UserStatus.active
+    row.used_at = datetime.utcnow()
     db.commit()
 
 
