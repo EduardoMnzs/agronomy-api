@@ -50,6 +50,16 @@ def _bootstrap_schema() -> None:
             "ALTER TABLE users "
             "ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMP WITHOUT TIME ZONE"
         ))
+        for col, ddl in (
+            ("state", "VARCHAR(2)"),
+            ("city", "VARCHAR(128)"),
+            ("biome", "VARCHAR(64)"),
+            ("main_crop", "VARCHAR(64)"),
+            ("planting_system", "VARCHAR(32)"),
+            ("preferred_units", "VARCHAR(16)"),
+            ("profile_updated_at", "TIMESTAMP WITHOUT TIME ZONE"),
+        ):
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {ddl}"))
 
         # Garantir ON DELETE nas FKs que apontam para users.id
         conn.execute(text("""

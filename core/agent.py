@@ -38,7 +38,10 @@ com base no que leu.
 7. Quando tiver evidência suficiente, responda em português SEM chamar mais \
 ferramentas. A resposta final deve:
    - Citar cada fato com marcadores inline no formato [doc_id:página], por \
-exemplo [3:27] para o documento de id 3 na página 27.
+exemplo [3:27] para o documento de id 3 na página 27. \
+NUNCA cite um doc_id que não esteja no catálogo de documentos disponíveis ou \
+que você não tenha lido via get_page_content. Se não tiver evidência, responda \
+sem marcador de citação.
    - Se houver fórmulas ou tabelas nos documentos, aplicá-las aos dados do \
 usuário e mostrar o cálculo passo a passo.
    - Declarar explicitamente quando a resposta NÃO estiver nos documentos.

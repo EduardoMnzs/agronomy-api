@@ -16,6 +16,32 @@ from db.session import get_db
 router = APIRouter(prefix="/query", tags=["query"])
 
 
+_PLANTING_LABELS = {
+    "direto": "Plantio direto",
+    "convencional": "Plantio convencional",
+    "cultivo_minimo": "Cultivo mínimo",
+    "misto": "Misto",
+}
+_UNIT_LABELS = {"metrico": "métrico (kg/ha, mm)", "sacas": "sacas/ha"}
+
+
+def _profile_context(user: User) -> dict:
+    out: dict = {}
+    if user.state:
+        out["Estado"] = user.state
+    if user.city:
+        out["Município"] = user.city
+    if user.biome:
+        out["Bioma"] = user.biome
+    if user.main_crop:
+        out["Cultura principal"] = user.main_crop
+    if user.planting_system:
+        out["Sistema de plantio"] = _PLANTING_LABELS.get(user.planting_system, user.planting_system)
+    if user.preferred_units:
+        out["Unidades preferidas"] = _UNIT_LABELS.get(user.preferred_units, user.preferred_units)
+    return out
+
+
 class QueryRequest(BaseModel):
     question: str
     knowledge_ids: list[int] | None = None
@@ -122,12 +148,17 @@ def run_query(
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
 
+    # Merge perfil do usuário (persistido) com user_data enviado na request.
+    merged_user_data = _profile_context(user)
+    if body.user_data:
+        merged_user_data.update({k: v for k, v in body.user_data.items() if v not in (None, "")})
+
     started = time.monotonic()
     try:
         result: QueryResult = query(
             question=body.question,
             index_entries=index_entries,
-            user_data=body.user_data,
+            user_data=merged_user_data or None,
             model=body.model,
             history=history,
         )

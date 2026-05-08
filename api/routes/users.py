@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import or_
@@ -11,6 +13,29 @@ from db.session import get_db
 from services.auth import hash_password
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+_VALID_STATES = {
+    "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA",
+    "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN",
+    "RS", "RO", "RR", "SC", "SP", "SE", "TO",
+}
+_VALID_PLANTING = {"direto", "convencional", "cultivo_minimo", "misto"}
+_VALID_UNITS = {"metrico", "sacas"}
+
+
+_STATE_TO_BIOME = {
+    # aproximação — estados que atravessam múltiplos biomas ficam no dominante
+    "AC": "Amazônia", "AM": "Amazônia", "AP": "Amazônia", "PA": "Amazônia",
+    "RO": "Amazônia", "RR": "Amazônia", "TO": "Cerrado",
+    "MA": "Cerrado", "PI": "Cerrado", "MT": "Cerrado", "GO": "Cerrado",
+    "DF": "Cerrado", "MS": "Cerrado", "MG": "Cerrado",
+    "CE": "Caatinga", "RN": "Caatinga", "PB": "Caatinga",
+    "PE": "Caatinga", "AL": "Caatinga", "SE": "Caatinga", "BA": "Caatinga",
+    "ES": "Mata Atlântica", "RJ": "Mata Atlântica", "SP": "Mata Atlântica",
+    "PR": "Mata Atlântica", "SC": "Mata Atlântica",
+    "RS": "Pampa",
+}
 
 
 class UserOut(BaseModel):
@@ -98,6 +123,81 @@ def list_users(
 @router.get("/me", response_model=UserOut)
 def get_me(current_user: User = Depends(get_current_user)):
     return _to_out(current_user)
+
+
+class UserProfileOut(BaseModel):
+    state: str | None
+    city: str | None
+    biome: str | None
+    main_crop: str | None
+    planting_system: str | None
+    preferred_units: str | None
+    profile_updated_at: str | None
+
+
+class UserProfileUpdate(BaseModel):
+    state: str | None = None
+    city: str | None = Field(default=None, max_length=128)
+    main_crop: str | None = Field(default=None, max_length=64)
+    planting_system: str | None = None
+    preferred_units: str | None = None
+
+
+def _profile_out(u: User) -> UserProfileOut:
+    return UserProfileOut(
+        state=u.state,
+        city=u.city,
+        biome=u.biome,
+        main_crop=u.main_crop,
+        planting_system=u.planting_system,
+        preferred_units=u.preferred_units,
+        profile_updated_at=u.profile_updated_at.isoformat() + "Z" if u.profile_updated_at else None,
+    )
+
+
+@router.get("/me/profile", response_model=UserProfileOut)
+def get_my_profile(current_user: User = Depends(get_current_user)):
+    return _profile_out(current_user)
+
+
+@router.patch("/me/profile", response_model=UserProfileOut)
+def update_my_profile(
+    body: UserProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    changed = False
+    if body.state is not None:
+        s = (body.state or "").upper().strip() or None
+        if s and s not in _VALID_STATES:
+            raise HTTPException(status_code=400, detail="UF inválida")
+        current_user.state = s
+        current_user.biome = _STATE_TO_BIOME.get(s) if s else None
+        changed = True
+    if body.city is not None:
+        current_user.city = body.city.strip() or None
+        changed = True
+    if body.main_crop is not None:
+        current_user.main_crop = body.main_crop.strip() or None
+        changed = True
+    if body.planting_system is not None:
+        val = (body.planting_system or "").strip() or None
+        if val and val not in _VALID_PLANTING:
+            raise HTTPException(status_code=400, detail="Sistema de plantio inválido")
+        current_user.planting_system = val
+        changed = True
+    if body.preferred_units is not None:
+        val = (body.preferred_units or "").strip() or None
+        if val and val not in _VALID_UNITS:
+            raise HTTPException(status_code=400, detail="Unidade inválida")
+        current_user.preferred_units = val
+        changed = True
+
+    if changed:
+        current_user.profile_updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(current_user)
+    return _profile_out(current_user)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=UserOut)

@@ -37,11 +37,19 @@ def _section_for(pages_read: list[dict], doc_id: str, page: int) -> tuple[str, s
     return "", ""
 
 
-def extract_inline_citations(answer: str, pages_read: list[dict]) -> tuple[str, list[Source]]:
+def extract_inline_citations(
+    answer: str,
+    pages_read: list[dict],
+    valid_doc_ids: set[str] | None = None,
+) -> tuple[str, list[Source]]:
     """
     Replace inline [doc_id:page] markers in the LLM answer with [N] references
     and return (rewritten_answer, sources). Keeps a stable numbering: each
     unique (doc_id, page) pair gets one ref, in order of first occurrence.
+
+    If `valid_doc_ids` is provided, citations referencing a doc_id not in the
+    set are stripped from the answer (the LLM hallucinated a source). We prefer
+    silent removal over surfacing "Documento N" phantoms that break preview.
     """
     order: dict[tuple[str, int], int] = {}
     sources: list[Source] = []
@@ -49,6 +57,10 @@ def extract_inline_citations(answer: str, pages_read: list[dict]) -> tuple[str, 
     def _replace(match: re.Match) -> str:
         doc_id = match.group(1)
         page = int(match.group(2))
+
+        if valid_doc_ids is not None and str(doc_id) not in valid_doc_ids:
+            return ""  # drop invalid citation marker
+
         key = (str(doc_id), page)
         if key not in order:
             doc_name, section = _section_for(pages_read, doc_id, page)

@@ -149,7 +149,10 @@ def query(
     )
 
     # 4. Extract citations → Source list
-    answer, sources = extract_inline_citations(result.answer, result.trace.pages_read)
+    valid_doc_ids = {str(did) for did in doc_ctxs.keys()}
+    answer, sources = extract_inline_citations(
+        result.answer, result.trace.pages_read, valid_doc_ids=valid_doc_ids
+    )
     sources = _dedupe_sources(sources)
 
     # If the agent produced no citations but did read pages, surface them as

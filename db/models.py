@@ -43,6 +43,13 @@ class User(Base):
     status = Column(Enum(UserStatus), default=UserStatus.active, nullable=False)
     last_active_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    state = Column(String(2), nullable=True)
+    city = Column(String(128), nullable=True)
+    biome = Column(String(64), nullable=True)
+    main_crop = Column(String(64), nullable=True)
+    planting_system = Column(String(32), nullable=True)
+    preferred_units = Column(String(16), nullable=True)
+    profile_updated_at = Column(DateTime, nullable=True)
 
     session_documents = relationship("SessionDocument", back_populates="user")
 
