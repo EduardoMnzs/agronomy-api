@@ -17,7 +17,7 @@ async def index_document_async(file_path: Path, indexes_dir: str, llm_model: str
     import asyncio
 
     model = llm_model or settings.index_model
-    add_desc = "yes" if settings.ENABLE_DOC_DESCRIPTION else "no"
+    add_desc = "yes" if settings.runtime_get("ENABLE_DOC_DESCRIPTION", settings.ENABLE_DOC_DESCRIPTION) else "no"
     index_path = _get_index_path(file_path, indexes_dir)
     index_path.parent.mkdir(parents=True, exist_ok=True)
 

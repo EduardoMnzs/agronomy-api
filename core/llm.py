@@ -7,12 +7,31 @@ applied consistently.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
 import litellm
 
 from core.config import settings
+
+
+_ENV_KEYS = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "AZURE_API_KEY",
+    "AZURE_API_BASE",
+    "AZURE_API_VERSION",
+)
+
+
+def _sync_provider_env():
+    """Copy DB-resolved provider creds into os.environ so LiteLLM sees them."""
+    for key in _ENV_KEYS:
+        val = settings.runtime_get(key, None)
+        if val:
+            os.environ[key] = str(val)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +51,7 @@ def _wrap_cache_system(system: str) -> Any:
     (Anthropic via LiteLLM) can cache it. Falls through as plain string
     for providers that don't.
     """
-    if not settings.PROMPT_CACHE_ENABLED or not system:
+    if not settings.runtime_get("PROMPT_CACHE_ENABLED", settings.PROMPT_CACHE_ENABLED) or not system:
         return system
     return [
         {
@@ -60,6 +79,7 @@ def complete(
             messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
+    _sync_provider_env()
     last_err: Exception | None = None
     for attempt in range(max_retries):
         try:
@@ -97,6 +117,7 @@ def tool_complete(
             full_messages.append({"role": "system", "content": system})
     full_messages.extend(messages)
 
+    _sync_provider_env()
     last_err: Exception | None = None
     for attempt in range(max_retries):
         try:

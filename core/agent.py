@@ -264,7 +264,7 @@ def _dispatch_tool(
     if name == "get_page_content":
         pages = args.get("pages") or ""
         payload_str = tool_get_page_content(
-            ctx, pages, max_pages=settings.AGENT_MAX_PAGES_PER_CALL
+            ctx, pages, max_pages=settings.runtime_get("AGENT_MAX_PAGES_PER_CALL", settings.AGENT_MAX_PAGES_PER_CALL)
         )
         try:
             payload = json.loads(payload_str)
@@ -376,7 +376,7 @@ def run_agent(
         }
     ]
 
-    for step in range(settings.AGENT_MAX_TOOL_CALLS):
+    for step in range(settings.runtime_get("AGENT_MAX_TOOL_CALLS", settings.AGENT_MAX_TOOL_CALLS)):
         msg = tool_complete(
             messages=messages,
             tools=TOOLS_SCHEMA,

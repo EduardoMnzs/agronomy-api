@@ -49,21 +49,32 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "extra": "allow"}
 
+    def _runtime(self, key: str, default=None):
+        # Late import to break the module-cycle (app_settings imports settings).
+        try:
+            from core import app_settings as _rt
+            return _rt.get(key, default)
+        except Exception:  # noqa: BLE001
+            return default
+
     @property
     def index_model(self) -> str:
-        return self.INDEX_MODEL or self.LLM_MODEL
+        return self._runtime("INDEX_MODEL") or self._runtime("LLM_MODEL") or self.INDEX_MODEL or self.LLM_MODEL
 
     @property
     def query_model(self) -> str:
-        return self.QUERY_MODEL or self.LLM_MODEL
+        return self._runtime("QUERY_MODEL") or self._runtime("LLM_MODEL") or self.QUERY_MODEL or self.LLM_MODEL
 
     @property
     def router_model(self) -> str:
-        return self.ROUTER_MODEL or self.query_model
+        return self._runtime("ROUTER_MODEL") or self.query_model
 
     @property
     def agent_model(self) -> str:
-        return self.AGENT_MODEL or self.query_model
+        return self._runtime("AGENT_MODEL") or self.query_model
+
+    def runtime_get(self, key: str, default=None):
+        return self._runtime(key, default if default is not None else getattr(self, key, None))
 
 
 settings = Settings()

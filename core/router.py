@@ -63,7 +63,7 @@ def route_documents(
     """
     all_ids = [c["doc_id"] for c in catalog]
 
-    if not settings.ROUTER_ENABLED or not catalog:
+    if not settings.runtime_get("ROUTER_ENABLED", settings.ROUTER_ENABLED) or not catalog:
         return all_ids
     if len(catalog) == 1:
         return all_ids

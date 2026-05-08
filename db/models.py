@@ -99,6 +99,15 @@ class SessionDocument(Base):
     user = relationship("User", back_populates="session_documents")
 
 
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key = Column(String(128), primary_key=True)
+    value = Column(Text, nullable=True)
+    is_secret = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class UserDocument(Base):
     __tablename__ = "user_documents"
 
