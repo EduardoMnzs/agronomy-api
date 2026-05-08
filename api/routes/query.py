@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
 from core.query_engine import QueryResult, query
-from db.models import Conversation, IndexStatus, KnowledgeDocument, QueryLog, SessionDocument, User
+from db.models import Conversation, IndexStatus, KnowledgeDocument, QueryLog, SessionDocument, User, UserDocument
 from db.session import get_db
 
 router = APIRouter(prefix="/query", tags=["query"])
@@ -20,6 +20,7 @@ class QueryRequest(BaseModel):
     question: str
     knowledge_ids: list[int] | None = None
     document_ids: list[int] | None = None
+    my_document_ids: list[int] | None = None
     user_data: dict | None = None
     model: str | None = None
     conversation_id: str | None = None
@@ -85,6 +86,23 @@ def run_query(
                     "doc_name": doc.original_filename,
                     "index_path": doc.index_path,
                     "file_path": doc.file_path,
+                })
+
+    if body.my_document_ids:
+        user_docs = db.query(UserDocument).filter(
+            UserDocument.id.in_(body.my_document_ids),
+            UserDocument.user_id == user.id,
+            UserDocument.status == IndexStatus.done,
+        ).all()
+        for doc in user_docs:
+            if doc.index_path:
+                index_entries.append({
+                    "doc_id": f"user_{doc.id}",
+                    "doc_name": doc.name,
+                    "index_path": doc.index_path,
+                    "file_path": doc.file_path,
+                    "description": doc.description,
+                    "category": doc.category.value if doc.category else None,
                 })
 
     if not index_entries:

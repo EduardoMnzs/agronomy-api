@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     KNOWLEDGE_INDEXES_DIR: str = "data/knowledge/indexes"
     SESSION_FILES_DIR: str = "data/sessions/files"
     SESSION_INDEXES_DIR: str = "data/sessions/indexes"
+    USER_DOCS_FILES_DIR: str = "data/users/files"
+    USER_DOCS_INDEXES_DIR: str = "data/users/indexes"
 
     model_config = {"env_file": ".env", "extra": "allow"}
 

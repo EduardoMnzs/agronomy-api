@@ -31,7 +31,7 @@ def seed(email: str, name: str, password: str):
 
         admin = User(
             email=email,
-            name=name,
+            full_name=name,
             password_hash=hash_password(password),
             role=UserRole.admin,
         )
@@ -40,7 +40,7 @@ def seed(email: str, name: str, password: str):
         db.refresh(admin)
         print("Admin criado com sucesso!")
         print(f"  Email : {admin.email}")
-        print(f"  Nome  : {admin.name}")
+        print(f"  Nome  : {admin.full_name}")
         print(f"  Role  : {admin.role.value}")
         print(f"  ID    : {admin.id}")
     finally:
