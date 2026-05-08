@@ -50,6 +50,7 @@ class User(Base):
     planting_system = Column(String(32), nullable=True)
     preferred_units = Column(String(16), nullable=True)
     profile_updated_at = Column(DateTime, nullable=True)
+    avatar_path = Column(String(1024), nullable=True)
 
     session_documents = relationship("SessionDocument", back_populates="user")
 

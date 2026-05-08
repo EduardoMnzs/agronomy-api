@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     SESSION_INDEXES_DIR: str = "data/sessions/indexes"
     USER_DOCS_FILES_DIR: str = "data/users/files"
     USER_DOCS_INDEXES_DIR: str = "data/users/indexes"
+    AVATARS_DIR: str = "data/avatars"
 
     model_config = {"env_file": ".env", "extra": "allow"}
 

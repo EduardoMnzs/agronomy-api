@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from api.routes import auth, conversations, documents, knowledge, my_documents, query, settings as settings_routes, users
+from api.routes import auth, conversations, documents, knowledge, my_documents, query, search as search_routes, settings as settings_routes, users
 from core.config import settings
 from db.models import Base, KnowledgeDocument
 from db.session import SessionLocal, engine
@@ -58,6 +58,7 @@ def _bootstrap_schema() -> None:
             ("planting_system", "VARCHAR(32)"),
             ("preferred_units", "VARCHAR(16)"),
             ("profile_updated_at", "TIMESTAMP WITHOUT TIME ZONE"),
+            ("avatar_path", "VARCHAR(1024)"),
         ):
             conn.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {ddl}"))
 
@@ -162,6 +163,7 @@ app.include_router(my_documents.router)
 app.include_router(query.router)
 app.include_router(users.router)
 app.include_router(settings_routes.router)
+app.include_router(search_routes.router)
 
 
 @app.get("/health")

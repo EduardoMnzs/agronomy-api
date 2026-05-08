@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime
+import shutil
+from datetime import datetime, timedelta
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
+from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, require_admin
+from core.config import settings
 from db.models import User, UserRole, UserStatus
 from db.session import get_db
-from services.auth import hash_password
+from services.auth import hash_password, verify_password
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -38,6 +43,45 @@ _STATE_TO_BIOME = {
 }
 
 
+_AVATAR_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
+_AVATAR_MIME = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+_AVATAR_MAX_BYTES = 5 * 1024 * 1024
+_AVATAR_TOKEN_TTL_MIN = 60
+
+
+def _make_avatar_token(user_id: int) -> str:
+    payload = {
+        "user_id": user_id,
+        "type": "avatar",
+        "exp": datetime.utcnow() + timedelta(minutes=_AVATAR_TOKEN_TTL_MIN),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def _verify_avatar_token(token: str, user_id: int) -> None:
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado")
+    if payload.get("type") != "avatar" or int(payload.get("user_id", -1)) != user_id:
+        raise HTTPException(status_code=403, detail="Token não autorizado")
+
+
+def _avatar_url(request: Request | None, user: User) -> str | None:
+    if not user.avatar_path or not Path(user.avatar_path).exists():
+        return None
+    if request is None:
+        return None
+    token = _make_avatar_token(user.id)
+    return str(request.url_for("get_user_avatar", user_id=user.id)) + f"?token={token}"
+
+
 class UserOut(BaseModel):
     id: int
     full_name: str
@@ -46,6 +90,7 @@ class UserOut(BaseModel):
     status: str
     last_active_at: str | None
     created_at: str
+    avatar_url: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -72,7 +117,7 @@ class UserUpdate(BaseModel):
     status: UserStatus | None = None
 
 
-def _to_out(user: User) -> UserOut:
+def _to_out(user: User, request: Request | None = None) -> UserOut:
     return UserOut(
         id=user.id,
         full_name=user.full_name,
@@ -81,11 +126,13 @@ def _to_out(user: User) -> UserOut:
         status=user.status.value if user.status else UserStatus.active.value,
         last_active_at=user.last_active_at.isoformat() + "Z" if user.last_active_at else None,
         created_at=user.created_at.isoformat() + "Z" if user.created_at else None,
+        avatar_url=_avatar_url(request, user),
     )
 
 
 @router.get("", response_model=UsersPage)
 def list_users(
+    request: Request,
     search: str | None = Query(default=None),
     role: UserRole | None = Query(default=None),
     status_: UserStatus | None = Query(default=None, alias="status"),
@@ -113,7 +160,7 @@ def list_users(
     )
 
     return UsersPage(
-        items=[_to_out(u) for u in rows],
+        items=[_to_out(u, request) for u in rows],
         total=total,
         page=page,
         limit=limit,
@@ -121,8 +168,116 @@ def list_users(
 
 
 @router.get("/me", response_model=UserOut)
-def get_me(current_user: User = Depends(get_current_user)):
-    return _to_out(current_user)
+def get_me(request: Request, current_user: User = Depends(get_current_user)):
+    return _to_out(current_user, request)
+
+
+class SelfUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+@router.patch("/me", response_model=UserOut)
+def update_me(
+    body: SelfUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if body.full_name is not None:
+        current_user.full_name = body.full_name
+    db.commit()
+    db.refresh(current_user)
+    return _to_out(current_user, request)
+
+
+class SelfPasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6, max_length=255)
+
+
+@router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_my_password(
+    body: SelfPasswordChange,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(body.current_password, current_user.password_hash):
+        raise HTTPException(status_code=400, detail="Senha atual incorreta")
+    if body.current_password == body.new_password:
+        raise HTTPException(status_code=400, detail="A nova senha deve ser diferente da atual")
+    current_user.password_hash = hash_password(body.new_password)
+    if current_user.status == UserStatus.pending:
+        current_user.status = UserStatus.active
+    db.commit()
+
+
+@router.post("/me/avatar", response_model=UserOut)
+async def upload_avatar(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    suffix = (Path(file.filename or "").suffix or "").lower().lstrip(".")
+    if suffix not in _AVATAR_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Formato não suportado: .{suffix or '?'}")
+
+    avatars_dir = Path(settings.AVATARS_DIR)
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+
+    # apaga avatar anterior pra não deixar lixo com outra extensão
+    if current_user.avatar_path:
+        try:
+            Path(current_user.avatar_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    target = avatars_dir / f"{current_user.id}.{suffix}"
+    total = 0
+    with open(target, "wb") as out:
+        while chunk := await file.read(1 << 16):
+            total += len(chunk)
+            if total > _AVATAR_MAX_BYTES:
+                out.close()
+                target.unlink(missing_ok=True)
+                raise HTTPException(status_code=400, detail="Imagem excede o limite de 5 MB")
+            out.write(chunk)
+
+    current_user.avatar_path = str(target)
+    db.commit()
+    db.refresh(current_user)
+    return _to_out(current_user, request)
+
+
+@router.delete("/me/avatar", response_model=UserOut)
+def delete_avatar(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.avatar_path:
+        try:
+            Path(current_user.avatar_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        current_user.avatar_path = None
+        db.commit()
+        db.refresh(current_user)
+    return _to_out(current_user, request)
+
+
+@router.get("/{user_id}/avatar", name="get_user_avatar")
+def get_user_avatar(user_id: int, token: str = Query(...), db: Session = Depends(get_db)):
+    _verify_avatar_token(token, user_id)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.avatar_path:
+        raise HTTPException(status_code=404, detail="Avatar não encontrado")
+    path = Path(user.avatar_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+    suffix = path.suffix.lstrip(".").lower()
+    media = _AVATAR_MIME.get(suffix, "application/octet-stream")
+    return FileResponse(path, media_type=media)
 
 
 class UserProfileOut(BaseModel):
@@ -201,7 +356,7 @@ def update_my_profile(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=UserOut)
-def create_user(body: UserCreate, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def create_user(body: UserCreate, request: Request, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email já cadastrado")
 
@@ -215,11 +370,11 @@ def create_user(body: UserCreate, db: Session = Depends(get_db), _: User = Depen
     db.add(user)
     db.commit()
     db.refresh(user)
-    return _to_out(user)
+    return _to_out(user, request)
 
 
 @router.patch("/{user_id}", response_model=UserOut)
-def update_user(user_id: int, body: UserUpdate, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def update_user(user_id: int, body: UserUpdate, request: Request, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
@@ -245,7 +400,7 @@ def update_user(user_id: int, body: UserUpdate, db: Session = Depends(get_db), _
 
     db.commit()
     db.refresh(user)
-    return _to_out(user)
+    return _to_out(user, request)
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
