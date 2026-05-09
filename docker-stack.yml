@@ -116,7 +116,7 @@ services:
 
   # ── Frontend ──────────────────────────────────────────────────────────────
   agronomy-frontend:
-    image: ${FRONTEND_IMAGE:-agronomy-frontend:latest}
+    image: ${FRONTEND_IMAGE:-eduardomnzs/agronomy-web:latest}
     networks:
       - ingress-network
     deploy:
