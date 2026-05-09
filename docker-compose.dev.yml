@@ -1,0 +1,20 @@
+# Override de desenvolvimento — expõe portas no localhost e desativa Caddy.
+# Uso: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+services:
+  db:
+    ports:
+      - "127.0.0.1:5433:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  api:
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - GUNICORN_WORKERS=2
+
+  caddy:
+    profiles:
+      - donotstart

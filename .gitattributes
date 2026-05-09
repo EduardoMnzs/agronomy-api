@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+# Scripts shell precisam de LF — CRLF quebra sh/bash no container Linux.
+*.sh   text eol=lf
+*.bash text eol=lf
+
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.zip  binary
+*.xlsx binary
+*.xls  binary
+*.docx binary
