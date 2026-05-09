@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from pathlib import Path
-
-from arq import ArqRedis
 
 from core.config import settings
 from core.indexer import index_document_async
@@ -28,10 +25,10 @@ async def task_index_document(ctx: dict, doc_id: int) -> None:
 
         try:
             index_path = await index_document_async(
-                Path(doc.file_path.replace("\\", "/")),
+                doc.file_path,
                 settings.KNOWLEDGE_INDEXES_DIR,
             )
-            doc.index_path = str(index_path)
+            doc.index_path = index_path
             doc.status = IndexStatus.done
             doc.indexed_at = datetime.utcnow()
             doc.status_message = None
@@ -58,12 +55,12 @@ async def task_index_user_document(ctx: dict, doc_id: int) -> None:
         db.commit()
 
         try:
-            indexes_dir = Path(settings.USER_DOCS_INDEXES_DIR) / str(doc.user_id)
+            indexes_dir = f"{settings.USER_DOCS_INDEXES_DIR}/{doc.user_id}"
             index_path = await index_document_async(
-                Path(doc.file_path.replace("\\", "/")),
-                str(indexes_dir),
+                doc.file_path,
+                indexes_dir,
             )
-            doc.index_path = str(index_path)
+            doc.index_path = index_path
             doc.status = IndexStatus.done
             doc.indexed_at = datetime.utcnow()
             doc.status_message = None

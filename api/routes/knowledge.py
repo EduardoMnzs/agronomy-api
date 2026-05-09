@@ -5,7 +5,7 @@ from pathlib import Path
 
 from arq import ArqRedis
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy import case, func
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, require_admin
 from api.uploads import safe_extension, save_upload_async
+from core import storage as store
 from core.config import settings
 from db.models import DocumentCategory, IndexStatus, KnowledgeDocument, QueryLog, User
 from db.session import get_db
@@ -97,22 +98,16 @@ def _verify_download_token(token: str, doc_id: int) -> int:
 
 
 def _read_text_preview(file_path: str, file_type: str) -> str | None:
-    path = Path(file_path)
-    if not path.exists():
+    key = store._to_key(file_path)
+    try:
+        if file_type == "docx":
+            with store.temp_download(key, suffix=".docx") as tmp:
+                from parsers.docx_parser import DOCXParser
+                text = DOCXParser().parse(tmp).text
+        else:
+            text = store.download_bytes(key).decode("utf-8", errors="replace")
+    except Exception:
         return None
-
-    if file_type == "docx":
-        try:
-            from parsers.docx_parser import DOCXParser
-            parsed = DOCXParser().parse(path)
-            text = parsed.text
-        except Exception:
-            return None
-    else:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return None
 
     if len(text) > _MAX_PREVIEW_CHARS:
         text = text[:_MAX_PREVIEW_CHARS] + "\n\n[... conteúdo truncado ...]"
@@ -138,13 +133,13 @@ async def upload_knowledge(
     suffix = safe_extension(file.filename, SUPPORTED_EXTENSIONS)
 
     files_dir = Path(settings.KNOWLEDGE_FILES_DIR)
-    file_path, file_size = await save_upload_async(file, files_dir, suffix)
+    file_key, file_size = await save_upload_async(file, files_dir, suffix)
 
     doc = KnowledgeDocument(
         name=name,
         original_filename=file.filename,
         file_type=suffix.lstrip("."),
-        file_path=str(file_path),
+        file_path=file_key,
         index_path=None,
         category=category,
         description=description or None,
@@ -237,7 +232,6 @@ def download_knowledge_file(
 ):
     user_id = _verify_download_token(token, doc_id)
 
-    # Revoga downloads de tokens emitidos por usuários deletados/desativados.
     issuer = db.query(User).filter(User.id == user_id).first()
     if not issuer or issuer.status.value == "inactive":
         raise HTTPException(status_code=403, detail="Token não autorizado")
@@ -246,19 +240,32 @@ def download_knowledge_file(
     if not doc or not doc.file_path:
         raise HTTPException(status_code=404, detail="Documento não encontrado")
 
-    path = Path(doc.file_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
-
     ft = (doc.file_type or "").lower()
     media_type = _MIME_TYPES.get(ft, "application/octet-stream")
-
     download_name = doc.original_filename or doc.name or f"documento.{ft}"
     if ft and not download_name.lower().endswith(f".{ft}"):
         download_name = f"{Path(download_name).stem}.{ft}"
 
+    key = store._to_key(doc.file_path)
+
+    if settings.STORAGE_BACKEND == "s3":
+        s3 = store._storage()
+        obj = s3._s3.get_object(Bucket=s3._bucket, Key=s3._fk(key))
+        return StreamingResponse(
+            obj["Body"].iter_chunks(1 << 16),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{download_name}"',
+                "Content-Length": str(obj["ContentLength"]),
+            },
+        )
+
+    local = store.resolve_local_path(key)
+    if not local or not local.exists():
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no disco")
+
     return FileResponse(
-        path,
+        local,
         media_type=media_type,
         filename=download_name,
         headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
@@ -273,7 +280,7 @@ def delete_knowledge(doc_id: int, db: Session = Depends(get_db), _: User = Depen
 
     for path in (doc.file_path, doc.index_path):
         if path:
-            Path(path).unlink(missing_ok=True)
+            store.delete_file(store._to_key(path))
 
     db.delete(doc)
     db.commit()

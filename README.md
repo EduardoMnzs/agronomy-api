@@ -35,6 +35,7 @@ e suporte multi-LLM via [LiteLLM](https://github.com/BerriAI/litellm).
 - Pedidos públicos de acesso com aprovação por admin
 - Reset de senha por email (Resend)
 - Indexação assíncrona via worker ARQ (Redis)
+- **Storage abstrato**: modo `local` (dev) ou **AWS S3** (produção) — stateless, sem disco persistente
 - Rate-limiting (slowapi) em endpoints sensíveis
 - Security headers, parser hardening (anti zip-bomb / billion-laughs / CSV-bomb)
 - Healthcheck distinto para liveness e readiness
@@ -49,6 +50,8 @@ e suporte multi-LLM via [LiteLLM](https://github.com/BerriAI/litellm).
 | LLM | LiteLLM (OpenAI / Azure / Gemini / Anthropic) |
 | Indexação | PageIndex |
 | Parsers | pymupdf (PDF), python-docx, openpyxl, pandas, defusedxml |
+| Storage | Local (dev) · AWS S3 / S3-compatible (produção) via `boto3` |
+| Cache de índices | `cachetools` TTLCache in-process (5 min) |
 | Email | Resend |
 | Reverse proxy / TLS | Caddy 2 (Let's Encrypt automático) |
 | Container | Docker multi-stage com `uv` (Astral) |
@@ -170,6 +173,25 @@ Veja `.env.example` para o template completo. Variáveis críticas:
 | `RESEND_API_KEY` | API key do Resend (vazio → emails só logados) |
 | `FROM_EMAIL` | Remetente |
 | `APP_BASE_URL` | URL pública do frontend (usada em links de reset de senha) |
+
+### Storage (S3)
+
+| Variável | Descrição | Default |
+|---|---|---|
+| `STORAGE_BACKEND` | `local` (dev) ou `s3` (produção) | `local` |
+| `S3_BUCKET` | Nome do bucket S3 | — |
+| `S3_REGION` | Região AWS (ex: `sa-east-1`) | `us-east-1` |
+| `S3_ACCESS_KEY` | Access Key ID (omita se usar IAM Role no EC2) | — |
+| `S3_SECRET_KEY` | Secret Access Key (omita se usar IAM Role no EC2) | — |
+| `S3_ENDPOINT_URL` | Endpoint customizado para MinIO/R2 (vazio = AWS) | — |
+| `S3_PREFIX` | Prefixo de chave dentro do bucket | `agronomy-api` |
+| `S3_PRESIGNED_URL_TTL` | TTL das presigned URLs em segundos | `900` |
+
+Em modo `s3`, **nenhum arquivo é gravado em disco** — uploads vão direto para o S3,
+índices são gerados em temp e enviados ao S3, downloads são feitos via streaming pela API
+(sem redirect, sem exposição do bucket ao frontend).
+
+> Para testar a conectividade: `py scripts/test_s3.py`
 
 ### Deploy
 
@@ -336,7 +358,7 @@ A app foi auditada e endurecida em maio/2026. Detalhes em
 - Sentry para exceptions
 - Métricas Prometheus
 - Backup automático Postgres (`pg_dump` para S3)
-- Cleanup jobs (session_documents expirados, password_reset_tokens usados)
+- Cleanup jobs (password_reset_tokens usados; session_documents — coberto pelo S3 Lifecycle em prod)
 - Testes automatizados (pasta `tests/` ainda vazia)
 
 ---
@@ -393,9 +415,21 @@ python -c "import secrets; print('REDIS_PASSWORD=' + secrets.token_urlsafe(24))"
 #   - DATABASE_URL e REDIS_URL coerentes com as senhas acima
 #   - chaves de LLM e RESEND_API_KEY
 #   - DEBUG=false  (essencial — habilita validação de SECRET_KEY no boot)
+#   - STORAGE_BACKEND=s3 + variáveis S3_*  (ver seção Storage acima)
 ```
 
 > **Nunca** commite o `.env`. Use Docker secrets ou variáveis injetadas pelo orquestrador.
+
+### 1b. Configurar S3 (produção)
+
+1. Crie o bucket S3 com **Block all public access** ativado.
+2. Crie um IAM user/role com a policy mínima (apenas `s3:PutObject`, `GetObject`, `DeleteObject`, `HeadObject` no prefixo `agronomy-api/*`).
+3. Em EC2, prefira **IAM Role** (sem `S3_ACCESS_KEY`/`S3_SECRET_KEY` no `.env`).
+4. Teste a conectividade antes do deploy:
+   ```bash
+   python scripts/test_s3.py
+   ```
+5. (Opcional) Configure um **S3 Lifecycle rule** no prefixo `agronomy-api/sessions/` para expirar objetos automaticamente em 1 dia — substitui o cron de limpeza de sessões.
 
 ### 2. DNS
 
@@ -471,9 +505,10 @@ agronomy-api/
 │       ├── settings.py           /settings  (admin)
 │       └── users.py              /users/*
 ├── core/
-│   ├── config.py                 Settings (validação SECRET_KEY, caps de upload, allowlists)
+│   ├── config.py                 Settings (validação SECRET_KEY, caps de upload, allowlists, S3)
 │   ├── app_settings.py           Settings runtime (DB-backed) com Fernet
-│   ├── indexer.py                Integração PageIndex (PDF + outros via .md)
+│   ├── storage.py                Backend de storage: LocalStorage / S3Storage + cache de índices
+│   ├── indexer.py                Integração PageIndex (PDF + outros via .md), S3-aware
 │   ├── query_engine.py           Pipeline RAG: catalog → router → agent
 │   ├── agent.py                  Tool-using agent (search/get_page_content/etc.)
 │   ├── router.py                 Router LLM que escolhe documentos relevantes
@@ -498,7 +533,8 @@ agronomy-api/
 │   └── email.py                  Resend + html.escape, _safe_url
 ├── scripts/
 │   ├── entrypoint.sh             Modos: api / worker / migrate
-│   └── seed.py                   Cria admin inicial (senha gerada)
+│   ├── seed.py                   Cria admin inicial (senha gerada)
+│   └── test_s3.py                Testa conectividade S3 (upload, exists, download, delete)
 ├── worker/
 │   ├── settings.py               ARQ WorkerSettings
 │   └── tasks.py                  task_index_document, task_index_user_document

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, require_admin
+from core import storage as store
 from core.config import settings
 from db.models import User, UserRole, UserStatus
 from db.session import get_db
@@ -74,10 +74,13 @@ def _verify_avatar_token(token: str, user_id: int) -> None:
 
 
 def _avatar_url(request: Request | None, user: User) -> str | None:
-    if not user.avatar_path or not Path(user.avatar_path).exists():
+    if not user.avatar_path or request is None:
         return None
-    if request is None:
-        return None
+    if settings.STORAGE_BACKEND != "s3":
+        key = store._to_key(user.avatar_path)
+        local = store.resolve_local_path(key)
+        if local is None or not local.exists():
+            return None
     token = _make_avatar_token(user.id)
     return str(request.url_for("get_user_avatar", user_id=user.id)) + f"?token={token}"
 
@@ -222,40 +225,43 @@ async def upload_avatar(
     if suffix not in _AVATAR_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Formato não suportado: .{suffix or '?'}")
 
-    avatars_dir = Path(settings.AVATARS_DIR)
-    avatars_dir.mkdir(parents=True, exist_ok=True)
-
-    # Apaga avatar anterior; só remove se estiver dentro de AVATARS_DIR.
+    # Delete previous avatar
     if current_user.avatar_path:
         try:
-            old = Path(current_user.avatar_path).resolve()
-            avatars_root = avatars_dir.resolve()
-            if avatars_root in old.parents or old.parent == avatars_root:
-                old.unlink(missing_ok=True)
-        except OSError:
+            store.delete_file(store._to_key(current_user.avatar_path))
+        except Exception:
             pass
 
-    target = avatars_dir / f"{current_user.id}.{suffix}"
+    avatar_key = f"avatars/{current_user.id}.{suffix}"
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=f".{suffix}", delete=False) as f:
+        tmp = Path(f.name)
+
     total = 0
     try:
-        with open(target, "wb") as out:
+        with open(tmp, "wb") as out:
             while chunk := await file.read(1 << 16):
                 total += len(chunk)
                 if total > _AVATAR_MAX_BYTES:
                     out.close()
-                    target.unlink(missing_ok=True)
+                    tmp.unlink(missing_ok=True)
                     raise HTTPException(
                         status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                         detail="Imagem excede o limite de 5 MB",
                     )
                 out.write(chunk)
     except HTTPException:
+        tmp.unlink(missing_ok=True)
         raise
     except Exception:
-        target.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
         raise
 
-    current_user.avatar_path = str(target)
+    import asyncio
+    loop = asyncio.get_event_loop()
+    saved_key = await loop.run_in_executor(None, store.finalize_to_storage, tmp)
+
+    current_user.avatar_path = saved_key
     db.commit()
     db.refresh(current_user)
     return _to_out(current_user, request)
@@ -269,8 +275,8 @@ def delete_avatar(
 ):
     if current_user.avatar_path:
         try:
-            Path(current_user.avatar_path).unlink(missing_ok=True)
-        except OSError:
+            store.delete_file(store._to_key(current_user.avatar_path))
+        except Exception:
             pass
         current_user.avatar_path = None
         db.commit()
@@ -284,12 +290,27 @@ def get_user_avatar(user_id: int, token: str = Query(...), db: Session = Depends
     user = db.query(User).filter(User.id == user_id).first()
     if not user or not user.avatar_path:
         raise HTTPException(status_code=404, detail="Avatar não encontrado")
-    path = Path(user.avatar_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
-    suffix = path.suffix.lstrip(".").lower()
+
+    key = store._to_key(user.avatar_path)
+    suffix = Path(key).suffix.lstrip(".").lower()
     media = _AVATAR_MIME.get(suffix, "application/octet-stream")
-    return FileResponse(path, media_type=media)
+
+    if settings.STORAGE_BACKEND == "s3":
+        s3 = store._storage()
+        try:
+            obj = s3._s3.get_object(Bucket=s3._bucket, Key=s3._fk(key))
+        except Exception:
+            raise HTTPException(status_code=404, detail="Avatar não encontrado")
+        return StreamingResponse(
+            obj["Body"].iter_chunks(1 << 16),
+            media_type=media,
+            headers={"Content-Length": str(obj["ContentLength"])},
+        )
+
+    local = store.resolve_local_path(key)
+    if not local or not local.exists():
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+    return FileResponse(local, media_type=media)
 
 
 class UserProfileOut(BaseModel):

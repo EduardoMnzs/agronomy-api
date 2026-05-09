@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 def _backfill_file_sizes() -> None:
+    from core.config import settings
+    if settings.STORAGE_BACKEND == "s3":
+        return  # size is always captured at upload time for S3
+
     db = SessionLocal()
     try:
         rows = db.query(KnowledgeDocument).filter(

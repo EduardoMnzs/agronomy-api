@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
 from api.uploads import safe_extension, save_upload_sync
+from core import storage as store
 from core.config import settings
 from core.indexer import index_document
 from db.models import SessionDocument, User
@@ -58,20 +59,24 @@ def upload_document(
     files_dir = Path(settings.SESSION_FILES_DIR) / str(user.id)
     file_path, _ = save_upload_sync(file, files_dir, suffix)
 
-    indexes_dir = Path(settings.SESSION_INDEXES_DIR) / str(user.id)
+    indexes_dir = str(Path(settings.SESSION_INDEXES_DIR) / str(user.id))
     try:
-        index_path = index_document(file_path, str(indexes_dir))
+        index_local_path = index_document(file_path, indexes_dir)
     except UnsafeFileError as exc:
         file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Arquivo rejeitado: {exc}") from exc
+
+    # Upload to S3 (no-op in local mode)
+    file_key = store.finalize_to_storage(file_path)
+    index_key = store.finalize_to_storage(Path(index_local_path))
 
     now = datetime.utcnow()
     doc = SessionDocument(
         user_id=user.id,
         original_filename=file.filename,
         file_type=suffix.lstrip("."),
-        file_path=str(file_path),
-        index_path=str(index_path),
+        file_path=file_key,
+        index_path=index_key,
         created_at=now,
         expires_at=now + timedelta(hours=SESSION_DOC_TTL_HOURS),
     )
@@ -98,7 +103,7 @@ def delete_document(doc_id: int, db: Session = Depends(get_db), user: User = Dep
 
     for path in (doc.file_path, doc.index_path):
         if path:
-            Path(path).unlink(missing_ok=True)
+            store.delete_file(store._to_key(path))
 
     db.delete(doc)
     db.commit()

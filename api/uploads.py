@@ -1,6 +1,7 @@
 """Helpers de upload com UUID storage filename e cap de tamanho em streaming."""
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -29,7 +30,14 @@ async def save_upload_async(
     suffix: str,
     *,
     max_bytes: int | None = None,
-) -> tuple[Path, int]:
+) -> tuple[str, int]:
+    """Save upload to storage and return (storage_key_or_path, size).
+
+    Always buffers to a local temp file first, then uploads to S3 if needed.
+    Returns a storage key (S3 mode) or local path string (local mode).
+    """
+    from core import storage as store
+
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / safe_storage_name(suffix)
     cap = max_bytes if max_bytes is not None else _max_bytes_for(suffix)
@@ -53,7 +61,10 @@ async def save_upload_async(
         target.unlink(missing_ok=True)
         raise
 
-    return target, total
+    # Upload to S3 in executor to avoid blocking the event loop
+    loop = asyncio.get_event_loop()
+    key = await loop.run_in_executor(None, store.finalize_to_storage, target)
+    return key, total
 
 
 def save_upload_sync(
@@ -63,6 +74,11 @@ def save_upload_sync(
     *,
     max_bytes: int | None = None,
 ) -> tuple[Path, int]:
+    """Save upload locally and return (local_path, size).
+
+    Always writes to local disk — callers are responsible for calling
+    ``storage.finalize_to_storage`` after any post-processing (e.g. indexing).
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / safe_storage_name(suffix)
     cap = max_bytes if max_bytes is not None else _max_bytes_for(suffix)

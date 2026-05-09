@@ -67,6 +67,18 @@ class Settings(BaseSettings):
     USER_DOCS_INDEXES_DIR: str = "data/users/indexes"
     AVATARS_DIR: str = "data/avatars"
 
+    # Storage backend — "local" (default) or "s3"
+    STORAGE_BACKEND: str = "local"
+
+    # S3 / S3-compatible (MinIO, R2, etc.)
+    S3_BUCKET: str = ""
+    S3_REGION: str = "us-east-1"
+    S3_ACCESS_KEY: str = ""
+    S3_SECRET_KEY: str = ""
+    S3_ENDPOINT_URL: str = ""      # empty = AWS; set for MinIO/R2/etc.
+    S3_PREFIX: str = "agronomy-api"  # key prefix inside the bucket
+    S3_PRESIGNED_URL_TTL: int = 900  # seconds (15 min)
+
     RESEND_API_KEY: str = ""
     FROM_EMAIL: str = ""
     APP_BASE_URL: str = "http://localhost:5173"
