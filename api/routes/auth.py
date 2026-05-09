@@ -2,21 +2,25 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from jose import JWTError
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
+from api.rate_limit import limiter
 from core.config import settings
 from db.models import PasswordResetToken, User, UserStatus
 from db.session import get_db
 from services.auth import (
+    MIN_PASSWORD_LEN,
+    TOKEN_TYPE_REFRESH,
     authenticate_user,
     create_access_token,
     create_refresh_token,
     decode_token,
     hash_password,
+    is_active_user,
     verify_password,
 )
 from services.email import password_reset_email, send_email
@@ -34,21 +38,24 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+_GENERIC_AUTH_ERROR = "Email ou senha incorretos"
+
+
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 def login(
+    request: Request,
     username: str = Form(...),
     password: str = Form(...),
     remember_me: bool = Form(False),
     db: Session = Depends(get_db),
 ):
     user = authenticate_user(db, username, password)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email ou senha incorretos")
-
-    if user.status == UserStatus.inactive:
+    # Mensagem unificada — evita enumeração (existente vs inativo vs inexistente).
+    if not user or not is_active_user(user):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Conta inativa. Entre em contato com um administrador.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=_GENERIC_AUTH_ERROR,
         )
 
     return TokenResponse(
@@ -59,7 +66,7 @@ def login(
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=6, max_length=255)
+    new_password: str = Field(min_length=MIN_PASSWORD_LEN, max_length=255)
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
@@ -95,10 +102,9 @@ class ForgotPasswordRequest(BaseModel):
 
 
 @router.post("/forgot-password", status_code=status.HTTP_204_NO_CONTENT)
-def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    """
-    Always returns 204, independentemente do e-mail existir — evita enumeração.
-    """
+@limiter.limit("5/hour")
+def forgot_password(request: Request, body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    # Sempre 204, independente do e-mail existir — evita enumeração.
     user = db.query(User).filter(User.email == body.email).first()
     if user and user.status != UserStatus.inactive:
         # invalida tokens antigos não usados
@@ -115,18 +121,19 @@ def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
         db.commit()
         base = settings.APP_BASE_URL.rstrip("/")
         reset_url = f"{base}/reset-password?token={raw}"
-        subject, html, text = password_reset_email(user.full_name, reset_url)
-        send_email(user.email, subject, html, text)
+        subject, html_body, text = password_reset_email(user.full_name, reset_url)
+        send_email(user.email, subject, html_body, text)
     return None
 
 
 class ResetPasswordRequest(BaseModel):
     token: str
-    new_password: str = Field(min_length=6, max_length=255)
+    new_password: str = Field(min_length=MIN_PASSWORD_LEN, max_length=255)
 
 
 @router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
-def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/hour")
+def reset_password(request: Request, body: ResetPasswordRequest, db: Session = Depends(get_db)):
     row = db.query(PasswordResetToken).filter(
         PasswordResetToken.token_hash == _hash_token(body.token)
     ).first()
@@ -145,16 +152,34 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh(body: RefreshRequest, db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+def refresh(request: Request, body: RefreshRequest, db: Session = Depends(get_db)):
+    invalid = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token inválido"
+    )
     try:
         payload = decode_token(body.refresh_token)
-        if payload.get("type") != "refresh":
-            raise ValueError
-        user_id = payload.get("sub")
-    except (JWTError, ValueError):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token inválido")
+    except JWTError:
+        raise invalid
+
+    if payload.get("type") != TOKEN_TYPE_REFRESH:
+        raise invalid
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise invalid
+
+    try:
+        uid_int = int(user_id)
+    except (TypeError, ValueError):
+        raise invalid
+
+    # Revoga sessão de usuário deletado/inativado — evita persistência indefinida.
+    user = db.query(User).filter(User.id == uid_int).first()
+    if not is_active_user(user):
+        raise invalid
 
     return TokenResponse(
-        access_token=create_access_token({"sub": user_id}),
-        refresh_token=create_refresh_token({"sub": user_id}),
+        access_token=create_access_token({"sub": str(user.id)}),
+        refresh_token=create_refresh_token({"sub": str(user.id)}),
     )

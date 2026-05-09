@@ -105,7 +105,7 @@ class UsersPage(BaseModel):
 class UserCreate(BaseModel):
     full_name: str = Field(min_length=1, max_length=255)
     email: EmailStr
-    password: str = Field(min_length=6, max_length=255)
+    password: str = Field(min_length=8, max_length=255)
     role: UserRole = UserRole.user
 
 
@@ -192,7 +192,7 @@ def update_me(
 
 class SelfPasswordChange(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=6, max_length=255)
+    new_password: str = Field(min_length=8, max_length=255)
 
 
 @router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
@@ -225,23 +225,35 @@ async def upload_avatar(
     avatars_dir = Path(settings.AVATARS_DIR)
     avatars_dir.mkdir(parents=True, exist_ok=True)
 
-    # apaga avatar anterior pra não deixar lixo com outra extensão
+    # Apaga avatar anterior; só remove se estiver dentro de AVATARS_DIR.
     if current_user.avatar_path:
         try:
-            Path(current_user.avatar_path).unlink(missing_ok=True)
+            old = Path(current_user.avatar_path).resolve()
+            avatars_root = avatars_dir.resolve()
+            if avatars_root in old.parents or old.parent == avatars_root:
+                old.unlink(missing_ok=True)
         except OSError:
             pass
 
     target = avatars_dir / f"{current_user.id}.{suffix}"
     total = 0
-    with open(target, "wb") as out:
-        while chunk := await file.read(1 << 16):
-            total += len(chunk)
-            if total > _AVATAR_MAX_BYTES:
-                out.close()
-                target.unlink(missing_ok=True)
-                raise HTTPException(status_code=400, detail="Imagem excede o limite de 5 MB")
-            out.write(chunk)
+    try:
+        with open(target, "wb") as out:
+            while chunk := await file.read(1 << 16):
+                total += len(chunk)
+                if total > _AVATAR_MAX_BYTES:
+                    out.close()
+                    target.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="Imagem excede o limite de 5 MB",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
 
     current_user.avatar_path = str(target)
     db.commit()

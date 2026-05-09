@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import html
 import secrets
 import string
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from api.deps import require_admin
+from api.rate_limit import limiter
 from core.config import settings
 from db.models import AccessRequest, AccessRequestStatus, User, UserRole, UserStatus
 from db.session import get_db
@@ -71,14 +73,25 @@ def _generate_temp_password() -> str:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=AccessRequestOut)
-def create_request(body: AccessRequestCreate, db: Session = Depends(get_db)):
-    # endpoint público — sem auth
+@limiter.limit("3/hour")
+def create_request(request: Request, body: AccessRequestCreate, db: Session = Depends(get_db)):
+    # Endpoint público. Anti-enumeração: sempre devolve 201 com forma "pending",
+    # mesmo quando o email já tem conta — admin só vê requests de fato pendentes.
+    pending_placeholder = AccessRequestOut(
+        id=0,
+        full_name=body.full_name.strip(),
+        email=body.email,
+        organization=(body.organization or "").strip() or None,
+        message=None,
+        status=AccessRequestStatus.pending.value,
+        rejection_reason=None,
+        created_at=datetime.utcnow().isoformat() + "Z",
+        decided_at=None,
+    )
+
     if db.query(User).filter(User.email == body.email).first():
-        raise HTTPException(
-            status_code=409,
-            detail="Este e-mail já possui conta. Use 'Esqueci minha senha' se não lembra a senha.",
-        )
-    # se já tem um pending, não duplica
+        return pending_placeholder
+
     existing = db.query(AccessRequest).filter(
         AccessRequest.email == body.email,
         AccessRequest.status == AccessRequestStatus.pending,
@@ -166,17 +179,17 @@ def decide_request(
         db.commit()
         db.refresh(req)
 
-        subject, html, text = access_request_decision_email(
+        subject, html_body, text = access_request_decision_email(
             req.full_name, approved=True, login_url=login_url
         )
-        # anexa credencial temporária ao e-mail aprovado
-        html += (
+        html_body = html_body + (
             f"<p style='margin-top:20px;padding:12px;background:#fff8e7;border-left:4px solid #EC6608;'>"
-            f"<strong>Senha temporária:</strong> <code style='font-size:14px;'>{temp_password}</code><br/>"
+            f"<strong>Senha temporária:</strong> "
+            f"<code style='font-size:14px;'>{html.escape(temp_password)}</code><br/>"
             f"<span style='color:#666;'>Você deverá trocá-la no primeiro login.</span></p>"
         )
         text += f"\n\nSenha temporária: {temp_password}\nVocê deverá trocá-la no primeiro login."
-        send_email(req.email, subject, html, text)
+        send_email(req.email, subject, html_body, text)
 
         return ApproveResponse(
             request=_serialize(req),
@@ -192,10 +205,10 @@ def decide_request(
     db.commit()
     db.refresh(req)
 
-    subject, html, text = access_request_decision_email(
+    subject, html_body, text = access_request_decision_email(
         req.full_name, approved=False, login_url=login_url, reason=req.rejection_reason
     )
-    send_email(req.email, subject, html, text)
+    send_email(req.email, subject, html_body, text)
 
     return ApproveResponse(request=_serialize(req))
 
