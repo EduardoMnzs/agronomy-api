@@ -1,0 +1,140 @@
+services:
+
+  # ── API ────────────────────────────────────────────────────────────────────
+  agronomy-api:
+    image: ${API_IMAGE:-eduardomnzs/agronomy-api:latest}
+    command: ["api"]
+    environment:
+      DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-agronomy}:${POSTGRES_PASSWORD}@agronomy-db:5432/${POSTGRES_DB:-agronomy}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@agronomy-redis:6379
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://agronomy.gaek.com.br}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-2024-11-20}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AZURE_API_KEY: ${AZURE_API_KEY:-}
+      AZURE_API_BASE: ${AZURE_API_BASE:-}
+      AZURE_API_VERSION: ${AZURE_API_VERSION:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      FROM_EMAIL: ${FROM_EMAIL:-}
+      APP_BASE_URL: ${APP_BASE_URL:-https://agronomy.gaek.com.br}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+      # Storage S3
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_PREFIX: ${S3_PREFIX:-agronomy-api}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+    volumes:
+      - agronomy_tmp:/app/data
+    networks:
+      - agronomy_internal
+      - ingress-network
+    deploy:
+      replicas: 1
+      labels:
+        caddy: agronomy-api.gaek.com.br
+        caddy.reverse_proxy: "{{upstreams 8000}}"
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # ── Worker ARQ ────────────────────────────────────────────────────────────
+  agronomy-worker:
+    image: ${API_IMAGE:-eduardomnzs/agronomy-api:latest}
+    command: ["worker"]
+    environment:
+      DEBUG: "false"
+      SECRET_KEY: ${SECRET_KEY}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-agronomy}:${POSTGRES_PASSWORD}@agronomy-db:5432/${POSTGRES_DB:-agronomy}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@agronomy-redis:6379
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-2024-11-20}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AZURE_API_KEY: ${AZURE_API_KEY:-}
+      AZURE_API_BASE: ${AZURE_API_BASE:-}
+      AZURE_API_VERSION: ${AZURE_API_VERSION:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SKIP_MIGRATIONS: "1"
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      S3_BUCKET: ${S3_BUCKET}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_PREFIX: ${S3_PREFIX:-agronomy-api}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+    volumes:
+      - agronomy_tmp:/app/data
+    networks:
+      - agronomy_internal
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  agronomy-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agronomy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-agronomy}
+    volumes:
+      - agronomy_postgres:/var/lib/postgresql/data
+    networks:
+      - agronomy_internal
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager   # garante que o volume persiste no mesmo nó
+      restart_policy:
+        condition: on-failure
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  agronomy-redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD}
+      - --save
+      - ""
+    networks:
+      - agronomy_internal
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  # ── Frontend ──────────────────────────────────────────────────────────────
+  agronomy-frontend:
+    image: ${FRONTEND_IMAGE:-agronomy-frontend:latest}
+    networks:
+      - ingress-network
+    deploy:
+      replicas: 1
+      labels:
+        caddy: agronomy.gaek.com.br
+        caddy.reverse_proxy: "{{upstreams 80}}"
+      restart_policy:
+        condition: on-failure
+
+# ── Volumes ────────────────────────────────────────────────────────────────
+volumes:
+  agronomy_postgres:    # dados do banco (persistente)
+  agronomy_tmp:         # temp de indexação (limpo após cada job)
+
+# ── Networks ───────────────────────────────────────────────────────────────
+networks:
+  agronomy_internal:
+    driver: overlay       # rede interna entre api/worker/db/redis
+  ingress-network:
+    external: true        # rede compartilhada com o Caddy já rodando

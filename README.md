@@ -398,87 +398,220 @@ E setar `SKIP_MIGRATIONS=1` nas réplicas.
 
 ## Deploy em produção
 
-### 1. Provisionar `.env`
+A imagem da API é publicada automaticamente no Docker Hub em
+**[`eduardomnzs/agronomy-api`](https://hub.docker.com/r/eduardomnzs/agronomy-api)** a cada push
+para `main` via GitHub Actions.
 
-```bash
-# No servidor:
-cp .env.example .env
+O deploy recomendado usa **Portainer + Docker Swarm + caddy-docker-proxy** para TLS automático
+com domínios personalizados (`agronomy.gaek.com.br` para o frontend,
+`agronomy-api.gaek.com.br` para a API).
 
-# Gere segredos:
-python -c "import secrets; print('SECRET_KEY=' + secrets.token_urlsafe(64))"
-python -c "import secrets; print('POSTGRES_PASSWORD=' + secrets.token_urlsafe(24))"
-python -c "import secrets; print('REDIS_PASSWORD=' + secrets.token_urlsafe(24))"
+---
 
-# Edite .env com:
-#   - PUBLIC_DOMAIN=api.seu-dominio.com.br
-#   - ACME_EMAIL=ops@seu-dominio.com.br
-#   - DATABASE_URL e REDIS_URL coerentes com as senhas acima
-#   - chaves de LLM e RESEND_API_KEY
-#   - DEBUG=false  (essencial — habilita validação de SECRET_KEY no boot)
-#   - STORAGE_BACKEND=s3 + variáveis S3_*  (ver seção Storage acima)
-```
+### CI/CD — GitHub Actions
 
-> **Nunca** commite o `.env`. Use Docker secrets ou variáveis injetadas pelo orquestrador.
+O workflow `.github/workflows/docker-publish.yml` faz build e push automáticos:
 
-### 1b. Configurar S3 (produção)
+- **Trigger:** push para `main`
+- **Tags geradas:** `latest` + `sha-<commit>` (rollback fácil)
+- **Cache de layers:** registry cache (`buildcache` tag) para builds rápidos
+- **Portainer webhook:** se `PORTAINER_WEBHOOK_URL` estiver definido, o Portainer repuxa a
+  nova imagem automaticamente após o push
+
+**Secrets necessários no GitHub** (`Settings → Secrets → Actions`):
+
+| Secret | Valor |
+|---|---|
+| `DOCKERHUB_USERNAME` | `eduardomnzs` |
+| `DOCKERHUB_TOKEN` | Access token do Docker Hub (não a senha) |
+| `PORTAINER_WEBHOOK_URL` | URL do webhook do stack no Portainer (opcional) |
+
+---
+
+### Pré-requisitos no servidor
+
+1. **Docker Swarm** inicializado:
+   ```bash
+   docker swarm init
+   ```
+
+2. **Rede de ingress** (compartilhada com o Caddy):
+   ```bash
+   docker network create --driver overlay --attachable ingress-network
+   ```
+
+3. **caddy-docker-proxy** rodando na rede `ingress-network` (cria os Caddy labels automaticamente):
+   ```bash
+   docker service create \
+     --name caddy \
+     --publish 80:80 \
+     --publish 443:443 \
+     --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+     --mount type=volume,source=caddy_data,target=/data \
+     --network ingress-network \
+     --constraint node.role==manager \
+     lucaslorentz/caddy-docker-proxy:ci-alpine
+   ```
+   > Se já tiver um Caddy rodando, apenas garanta que ele usa a rede `ingress-network`.
+
+---
+
+### 1. Configurar S3
 
 1. Crie o bucket S3 com **Block all public access** ativado.
-2. Crie um IAM user/role com a policy mínima (apenas `s3:PutObject`, `GetObject`, `DeleteObject`, `HeadObject` no prefixo `agronomy-api/*`).
-3. Em EC2, prefira **IAM Role** (sem `S3_ACCESS_KEY`/`S3_SECRET_KEY` no `.env`).
-4. Teste a conectividade antes do deploy:
+2. Crie um IAM user/role com a policy mínima:
+   ```json
+   {
+     "Effect": "Allow",
+     "Action": ["s3:PutObject","s3:GetObject","s3:DeleteObject","s3:HeadObject"],
+     "Resource": "arn:aws:s3:::SEU-BUCKET/agronomy-api/*"
+   }
+   ```
+3. Em EC2, prefira **IAM Role** (sem chaves no `.env`).
+4. (Opcional) S3 Lifecycle rule no prefixo `agronomy-api/sessions/`: expirar em 1 dia.
+5. Teste antes do deploy:
    ```bash
    python scripts/test_s3.py
    ```
-5. (Opcional) Configure um **S3 Lifecycle rule** no prefixo `agronomy-api/sessions/` para expirar objetos automaticamente em 1 dia — substitui o cron de limpeza de sessões.
+
+---
 
 ### 2. DNS
 
-Aponte `${PUBLIC_DOMAIN}` (registro A/AAAA) para o IP do servidor. Caddy emite o cert
-Let's Encrypt automaticamente no primeiro request HTTPS.
+Aponte os registros A/AAAA para o IP do servidor:
 
-### 3. Subir
-
-```bash
-docker compose up -d --build
+```
+agronomy.gaek.com.br       → IP do servidor   (frontend)
+agronomy-api.gaek.com.br   → IP do servidor   (backend)
 ```
 
-A primeira instância da `api` roda `alembic upgrade head` automaticamente.
+Caddy emite certs Let's Encrypt automaticamente no primeiro request HTTPS.
 
-### 4. Criar admin inicial
+---
+
+### 3. Provisionar variáveis de ambiente no Portainer
+
+No Portainer, ao criar o stack, preencha as variáveis de ambiente (aba **Environment
+variables**) ou crie um arquivo `.env` no servidor e passe via `--env-file`.
+
+Variáveis obrigatórias:
 
 ```bash
-docker compose exec api python scripts/seed.py \
-  --email admin@empresa.com.br --name "Administrador"
-# A senha gerada é impressa uma única vez. Status inicial: pending → admin
-# precisa redefinir no primeiro login.
+SECRET_KEY=<64-bytes urlsafe — python -c "import secrets; print(secrets.token_urlsafe(64))">
+POSTGRES_PASSWORD=<senha-forte>
+REDIS_PASSWORD=<senha-forte>
+OPENAI_API_KEY=<ou azure/gemini/anthropic>
+RESEND_API_KEY=<chave-resend>
+FROM_EMAIL=noreply@gaek.com.br
+APP_BASE_URL=https://agronomy.gaek.com.br
+ALLOWED_ORIGINS=https://agronomy.gaek.com.br
+
+# S3
+STORAGE_BACKEND=s3
+S3_BUCKET=<nome-do-bucket>
+S3_REGION=us-east-1
+S3_ACCESS_KEY=<access-key>     # omita se usar IAM Role no EC2
+S3_SECRET_KEY=<secret-key>     # idem
+
+# Imagens
+API_IMAGE=eduardomnzs/agronomy-api:latest
+FRONTEND_IMAGE=<sua-imagem-de-frontend>
 ```
 
-### 5. Healthcheck para load-balancer
+---
+
+### 4. Deploy do stack via Portainer
+
+1. No Portainer, acesse **Stacks → Add stack**.
+2. Nome: `agronomy`
+3. Tipo: **Repository** (cola o Git repo) **ou** **Upload** (sobe o `docker-stack.yml`).
+4. Preencha as variáveis de ambiente acima.
+5. Clique em **Deploy the stack**.
+
+O serviço `agronomy-api` expõe automaticamente os labels:
+```yaml
+caddy: agronomy-api.gaek.com.br
+caddy.reverse_proxy: "{{upstreams 8000}}"
+```
+O caddy-docker-proxy configura o Caddy em tempo real — sem tocar em `Caddyfile`.
+
+---
+
+### 5. Deploy manual (sem Portainer)
+
+```bash
+# No manager do Swarm, com as variáveis no ambiente ou arquivo .env:
+docker stack deploy \
+  --with-registry-auth \
+  --compose-file docker-stack.yml \
+  agronomy
+```
+
+---
+
+### 6. Criar admin inicial
+
+```bash
+# Via Portainer: Stacks → agronomy → agronomy-api → Console
+# Via SSH:
+docker exec -it $(docker ps -qf name=agronomy_agronomy-api) \
+  python scripts/seed.py --email admin@empresa.com.br --name "Administrador"
+# A senha gerada é impressa uma única vez → troque no primeiro login
+```
+
+---
+
+### 7. Portainer Webhook (redeploy automático)
+
+Para que o GitHub Actions dispare o redeploy no Portainer:
+
+1. No Portainer, abra o stack `agronomy` → **Webhooks** → copie a URL.
+2. Adicione como secret `PORTAINER_WEBHOOK_URL` no GitHub.
+3. A cada push para `main`, o CI faz build + push + chama o webhook → Portainer repuxa
+   `eduardomnzs/agronomy-api:latest`.
+
+---
+
+### 8. Healthcheck
 
 ```
 GET /healthz/ready
-  → 200 {"status":"ready", "checks":{"database":{"ok":true}, "redis":{"ok":true}}}
+  → 200 {"status":"ready","checks":{"database":{"ok":true},"redis":{"ok":true}}}
   → 503 quando alguma dependência falha
 ```
 
-### 6. Comandos úteis
+Configure como probe de readiness no seu load-balancer ou no Docker Swarm:
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost:8000/healthz/ready"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+```
+
+---
+
+### 9. Comandos úteis (Swarm)
 
 ```bash
-# Logs:
-docker compose logs -f api
+# Ver status dos serviços:
+docker service ls
 
-# Migrar antes de deploy de nova versão:
-docker compose run --rm api migrate
+# Logs em tempo real:
+docker service logs -f agronomy_agronomy-api
 
-# Rebuild quando mudar requirements.txt ou código:
-docker compose build api worker
+# Forçar redeploy (nova imagem):
+docker service update --image eduardomnzs/agronomy-api:latest agronomy_agronomy-api
 
-# Acessar Postgres / Redis (rede interna):
-docker compose exec db psql -U agronomy -d agronomy
-docker compose exec redis redis-cli -a "$REDIS_PASSWORD"
+# Escalar worker:
+docker service scale agronomy_agronomy-worker=2
 
-# Em dev, expor portas no host:
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# Rodar migration manual:
+docker exec -it $(docker ps -qf name=agronomy_agronomy-api) alembic upgrade head
+
+# Acessar Postgres:
+docker exec -it $(docker ps -qf name=agronomy_agronomy-db) \
+  psql -U agronomy -d agronomy
 ```
 
 ---
@@ -544,10 +677,14 @@ agronomy-api/
 │   └── security-pentest-2026-05-08.md
 ├── data/                         Arquivos + indexes (gitignored, montado como volume)
 ├── logs/                         (gitignored)
+├── .github/
+│   └── workflows/
+│       └── docker-publish.yml    CI/CD: build + push Docker Hub + Portainer webhook
 ├── Caddyfile                     Reverse proxy + Let's Encrypt
 ├── Dockerfile                    Multi-stage com uv (Astral) + non-root + tini
 ├── docker-compose.yml            Stack de produção (api, worker, db, redis, caddy)
 ├── docker-compose.dev.yml        Override dev (expõe portas, desativa Caddy)
+├── docker-stack.yml              Portainer/Swarm stack (caddy-docker-proxy)
 ├── .dockerignore
 ├── .gitattributes                Força LF em *.sh
 ├── .env.example
