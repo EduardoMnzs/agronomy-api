@@ -45,5 +45,7 @@ jobs:
           cache-to: type=registry,ref=eduardomnzs/agronomy-api:buildcache,mode=max
 
       - name: Trigger Portainer redeploy
-        if: ${{ secrets.PORTAINER_WEBHOOK_URL != '' }}
-        run: curl -fsSL -X POST "${{ secrets.PORTAINER_WEBHOOK_URL }}"
+        if: ${{ env.PORTAINER_WEBHOOK_URL != '' }}
+        env:
+          PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+        run: curl -fsSL -X POST "$PORTAINER_WEBHOOK_URL"
