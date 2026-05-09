@@ -10,6 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from api.rate_limit import limiter, rate_limit_exceeded_handler
 from api.routes import access_requests, auth, conversations, documents, knowledge, my_documents, query, search as search_routes, settings as settings_routes, users
@@ -105,6 +106,10 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept"],
     max_age=600,
 )
+# Deve ser o último add_middleware (fica mais externo na cadeia) para que
+# X-Forwarded-Proto do Caddy seja lido antes de qualquer outro middleware.
+# Sem isso, request.url_for() gera http:// mesmo com TLS no Caddy.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 app.include_router(auth.router)
 app.include_router(knowledge.router)

@@ -10,7 +10,7 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api.deps import get_current_user
+from api.deps import get_current_user, public_url
 from api.uploads import safe_extension, save_upload_async
 from core import storage as store
 from core.config import settings
@@ -202,7 +202,7 @@ def get_user_document(
     ft = (doc.file_type or "").lower()
 
     token = _make_download_token(doc.id, user.id)
-    detail.url = str(request.url_for("download_user_document", doc_id=doc.id)) + f"?token={token}"
+    detail.url = public_url(request, "download_user_document", doc_id=doc.id) + f"?token={token}"
 
     if ft in _TEXT_PREVIEW_TYPES:
         detail.content = _read_text_preview(doc.file_path, ft)

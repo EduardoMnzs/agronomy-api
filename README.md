@@ -699,6 +699,7 @@ agronomy-api/
 
 ## Documentação adicional
 
+- [`docs/deploy.md`](docs/deploy.md) — guia completo: Cloudflare + Portainer + Docker Swarm
 - [`docs/alembic.md`](docs/alembic.md) — fluxo de migrations
 - [`docs/knowledge_template.md`](docs/knowledge_template.md) — template para metadados de documentos
 - [`CLAUDE.md`](CLAUDE.md) — instruções de arquitetura para a IA

@@ -2,7 +2,7 @@ services:
 
   # ── API ────────────────────────────────────────────────────────────────────
   agronomy-api:
-    image: ${API_IMAGE:-eduardomnzs/agronomy-api:latest}
+    image: ${API_IMAGE:-eduardomnzs/agronomy-api:v1.1}
     command: ["api"]
     environment:
       DEBUG: "false"
@@ -46,7 +46,7 @@ services:
 
   # ── Worker ARQ ────────────────────────────────────────────────────────────
   agronomy-worker:
-    image: ${API_IMAGE:-eduardomnzs/agronomy-api:latest}
+    image: ${API_IMAGE:-eduardomnzs/agronomy-api:v1.1}
     command: ["worker"]
     environment:
       DEBUG: "false"
@@ -68,6 +68,9 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-}
       S3_PREFIX: ${S3_PREFIX:-agronomy-api}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+    # O worker não expõe HTTP — desativa o healthcheck da imagem (que bate em :8000)
+    healthcheck:
+      disable: true
     volumes:
       - agronomy_tmp:/app/data
     networks:

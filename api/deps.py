@@ -1,15 +1,30 @@
 from datetime import datetime, timedelta
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 from sqlalchemy.orm import Session
 
+from core.config import settings
 from db.models import User, UserRole
 from db.session import get_db
 from services.auth import decode_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+
+def public_url(request: Request, route_name: str, **path_params) -> str:
+    """Build a fully-qualified URL for a named route.
+
+    Behind a TLS proxy (Caddy), the internal request arrives as http:// even
+    though the client used https://. We detect this via X-Forwarded-Proto sent
+    by Caddy and rewrite the scheme so the browser never sees mixed-content URLs.
+    """
+    url = str(request.url_for(route_name, **path_params))
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if forwarded_proto == "https" or (not settings.DEBUG and not url.startswith("https://")):
+        url = url.replace("http://", "https://", 1)
+    return url
 
 _LAST_ACTIVE_THROTTLE = timedelta(minutes=5)
 

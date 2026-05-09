@@ -10,7 +10,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from api.deps import get_current_user, require_admin
+from api.deps import get_current_user, public_url, require_admin
 from core import storage as store
 from core.config import settings
 from db.models import User, UserRole, UserStatus
@@ -82,7 +82,7 @@ def _avatar_url(request: Request | None, user: User) -> str | None:
         if local is None or not local.exists():
             return None
     token = _make_avatar_token(user.id)
-    return str(request.url_for("get_user_avatar", user_id=user.id)) + f"?token={token}"
+    return public_url(request, "get_user_avatar", user_id=user.id) + f"?token={token}"
 
 
 class UserOut(BaseModel):
