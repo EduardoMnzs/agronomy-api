@@ -24,6 +24,12 @@ class Settings(BaseSettings):
 
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
 
+    # IPs/hosts confiáveis para leitura de X-Forwarded-* headers.
+    # Use "*" apenas quando o proxy já sanitiza o header (ex: Caddy com
+    # `header_up X-Forwarded-For {remote_host}`). Em produção, restringir
+    # ao nome/IP do serviço proxy (ex: "caddy") é preferível.
+    TRUSTED_PROXY_IPS: str = "*"
+
     MAX_UPLOAD_BYTES: int = 50 * 1024 * 1024
     MAX_UPLOAD_BYTES_BY_EXT: dict[str, int] = {
         ".pdf": 50 * 1024 * 1024,

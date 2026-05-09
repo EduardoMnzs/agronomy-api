@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core.config import settings
 from core.indexer import index_document_async
@@ -30,7 +30,7 @@ async def task_index_document(ctx: dict, doc_id: int) -> None:
             )
             doc.index_path = index_path
             doc.status = IndexStatus.done
-            doc.indexed_at = datetime.utcnow()
+            doc.indexed_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
             doc.status_message = None
         except Exception as exc:  # noqa: BLE001
             logger.exception("Indexing failed for doc_id=%d", doc_id)
@@ -62,7 +62,7 @@ async def task_index_user_document(ctx: dict, doc_id: int) -> None:
             )
             doc.index_path = index_path
             doc.status = IndexStatus.done
-            doc.indexed_at = datetime.utcnow()
+            doc.indexed_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
             doc.status_message = None
         except Exception as exc:  # noqa: BLE001
             logger.exception("User doc indexing failed for doc_id=%d", doc_id)

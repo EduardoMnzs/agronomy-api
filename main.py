@@ -109,7 +109,14 @@ app.add_middleware(
 # Deve ser o último add_middleware (fica mais externo na cadeia) para que
 # X-Forwarded-Proto do Caddy seja lido antes de qualquer outro middleware.
 # Sem isso, request.url_for() gera http:// mesmo com TLS no Caddy.
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+# TRUSTED_PROXY_IPS configura quais proxies têm seus headers aceitos.
+_proxy_trusted = settings.TRUSTED_PROXY_IPS.strip()
+_trusted_hosts: list[str] | str = (
+    _proxy_trusted
+    if _proxy_trusted == "*"
+    else [h.strip() for h in _proxy_trusted.split(",") if h.strip()]
+)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=_trusted_hosts)
 
 app.include_router(auth.router)
 app.include_router(knowledge.router)

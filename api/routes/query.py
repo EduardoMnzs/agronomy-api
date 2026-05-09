@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -285,7 +285,7 @@ def _upsert_conversation(
         if len(merged) > cap:
             merged = merged[-cap:]
         conv.messages = merged
-        conv.updated_at = datetime.utcnow()
+        conv.updated_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
     else:
         title = question[:60] + ("…" if len(question) > 60 else "")
         conv = Conversation(

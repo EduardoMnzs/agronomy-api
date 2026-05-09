@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -70,7 +70,7 @@ def upload_document(
     file_key = store.finalize_to_storage(file_path)
     index_key = store.finalize_to_storage(Path(index_local_path))
 
-    now = datetime.utcnow()
+    now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
     doc = SessionDocument(
         user_id=user.id,
         original_filename=file.filename,

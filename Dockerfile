@@ -18,11 +18,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY requirements.txt ./
+COPY requirements.txt requirements.lock ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv /opt/venv \
-    && uv pip install --python /opt/venv/bin/python -r requirements.txt
+    && uv pip install --python /opt/venv/bin/python -r requirements.lock
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
 

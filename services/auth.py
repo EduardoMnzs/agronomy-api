@@ -1,5 +1,5 @@
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -33,7 +33,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def _build_token(payload: dict, *, token_type: str, expires_delta: timedelta) -> str:
-    now = datetime.utcnow()
+    now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
     body = {
         **payload,
         "type": token_type,

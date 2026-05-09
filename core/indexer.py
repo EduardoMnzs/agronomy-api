@@ -32,7 +32,7 @@ async def _run_indexer(file_path: Path, model: str, add_desc: str) -> dict:
             "if_add_node_id": "yes",
             "if_add_doc_description": add_desc,
         })
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, page_index_main, str(file_path), opt)
 
     parser = get_parser(file_path)

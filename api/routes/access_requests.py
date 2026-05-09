@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import secrets
 import string
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -85,7 +85,7 @@ def create_request(request: Request, body: AccessRequestCreate, db: Session = De
         message=None,
         status=AccessRequestStatus.pending.value,
         rejection_reason=None,
-        created_at=datetime.utcnow().isoformat() + "Z",
+        created_at=datetime.now(tz=timezone.utc).replace(tzinfo=None).isoformat() + "Z",
         decided_at=None,
     )
 
@@ -173,7 +173,7 @@ def decide_request(
         db.add(new_user)
         db.flush()  # pega o id
         req.status = AccessRequestStatus.approved
-        req.decided_at = datetime.utcnow()
+        req.decided_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
         req.decided_by = admin.id
         req.created_user_id = new_user.id
         db.commit()
@@ -200,7 +200,7 @@ def decide_request(
     # reject
     req.status = AccessRequestStatus.rejected
     req.rejection_reason = (body.rejection_reason or "").strip() or None
-    req.decided_at = datetime.utcnow()
+    req.decided_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
     req.decided_by = admin.id
     db.commit()
     db.refresh(req)

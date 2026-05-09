@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
@@ -59,7 +59,7 @@ def _make_avatar_token(user_id: int) -> str:
     payload = {
         "user_id": user_id,
         "type": "avatar",
-        "exp": datetime.utcnow() + timedelta(minutes=_AVATAR_TOKEN_TTL_MIN),
+        "exp": datetime.now(tz=timezone.utc).replace(tzinfo=None) + timedelta(minutes=_AVATAR_TOKEN_TTL_MIN),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
@@ -258,7 +258,7 @@ async def upload_avatar(
         raise
 
     import asyncio
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     saved_key = await loop.run_in_executor(None, store.finalize_to_storage, tmp)
 
     current_user.avatar_path = saved_key
@@ -382,7 +382,7 @@ def update_my_profile(
         changed = True
 
     if changed:
-        current_user.profile_updated_at = datetime.utcnow()
+        current_user.profile_updated_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
         db.commit()
         db.refresh(current_user)
     return _profile_out(current_user)

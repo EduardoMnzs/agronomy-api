@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -49,7 +49,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise credentials_exception
 
-    now = datetime.utcnow()
+    now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
     if user.last_active_at is None or (now - user.last_active_at) > _LAST_ACTIVE_THROTTLE:
         try:
             user.last_active_at = now

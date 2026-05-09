@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from arq import ArqRedis
@@ -82,7 +82,7 @@ def _make_download_token(doc_id: int, user_id: int) -> str:
         "doc_id": doc_id,
         "user_id": user_id,
         "type": "download",
-        "exp": datetime.utcnow() + timedelta(minutes=_DOWNLOAD_TOKEN_TTL_MIN),
+        "exp": datetime.now(tz=timezone.utc).replace(tzinfo=None) + timedelta(minutes=_DOWNLOAD_TOKEN_TTL_MIN),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 

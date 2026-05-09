@@ -62,7 +62,7 @@ async def save_upload_async(
         raise
 
     # Upload to S3 in executor to avoid blocking the event loop
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     key = await loop.run_in_executor(None, store.finalize_to_storage, target)
     return key, total
 

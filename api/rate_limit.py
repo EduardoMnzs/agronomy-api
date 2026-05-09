@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 def _key_func(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    # ProxyHeadersMiddleware (middleware mais externo na cadeia) já resolveu
+    # o IP real a partir do X-Forwarded-For enviado pelo Caddy e gravou em
+    # request.client.host — não relemos o header cru para evitar IP spoofing.
     return get_remote_address(request)
 
 

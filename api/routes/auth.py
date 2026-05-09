@@ -1,6 +1,6 @@
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from jose import JWTError
@@ -116,7 +116,7 @@ def forgot_password(request: Request, body: ForgotPasswordRequest, db: Session =
         db.add(PasswordResetToken(
             user_id=user.id,
             token_hash=_hash_token(raw),
-            expires_at=datetime.utcnow() + timedelta(minutes=_RESET_TOKEN_TTL_MIN),
+            expires_at=datetime.now(tz=timezone.utc).replace(tzinfo=None) + timedelta(minutes=_RESET_TOKEN_TTL_MIN),
         ))
         db.commit()
         base = settings.APP_BASE_URL.rstrip("/")
@@ -137,7 +137,7 @@ def reset_password(request: Request, body: ResetPasswordRequest, db: Session = D
     row = db.query(PasswordResetToken).filter(
         PasswordResetToken.token_hash == _hash_token(body.token)
     ).first()
-    if not row or row.used_at is not None or row.expires_at < datetime.utcnow():
+    if not row or row.used_at is not None or row.expires_at < datetime.now(tz=timezone.utc).replace(tzinfo=None):
         raise HTTPException(status_code=400, detail="Token inválido ou expirado")
 
     user = db.query(User).filter(User.id == row.user_id).first()
@@ -147,7 +147,7 @@ def reset_password(request: Request, body: ResetPasswordRequest, db: Session = D
     user.password_hash = hash_password(body.new_password)
     if user.status == UserStatus.pending:
         user.status = UserStatus.active
-    row.used_at = datetime.utcnow()
+    row.used_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
     db.commit()
 
 
