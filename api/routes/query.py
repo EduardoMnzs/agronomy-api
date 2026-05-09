@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -43,8 +44,12 @@ def _profile_context(user: User) -> dict:
     return out
 
 
+QueryScope = Literal["all", "kb", "mine", "selection"]
+
+
 class QueryRequest(BaseModel):
     question: str
+    scope: QueryScope | None = None
     knowledge_ids: list[int] | None = None
     document_ids: list[int] | None = None
     my_document_ids: list[int] | None = None
@@ -66,6 +71,16 @@ class QueryResponse(BaseModel):
     answer: str
     sources: list[SourceOut]
     model_used: str
+
+
+def _resolve_scope(body: "QueryRequest") -> QueryScope:
+    # Backward compat: sem scope explícito, infere por presença de IDs.
+    # IDs presentes → 'selection'; nada → 'all' (todo o KB).
+    if body.scope:
+        return body.scope
+    if body.knowledge_ids or body.my_document_ids or body.document_ids:
+        return "selection"
+    return "all"
 
 
 def _resolve_model(requested: str | None, user: User) -> str | None:
@@ -94,19 +109,23 @@ def run_query(
         raise HTTPException(status_code=400, detail="Pergunta não pode ser vazia")
 
     chosen_model = _resolve_model(body.model, user)
+    scope = _resolve_scope(body)
 
     index_entries: list[dict] = []
 
-    if body.knowledge_ids:
+    # Knowledge base (KnowledgeDocument)
+    if scope in ("all", "kb"):
+        kb_docs = db.query(KnowledgeDocument).filter(
+            KnowledgeDocument.status == IndexStatus.done,
+            KnowledgeDocument.index_path.isnot(None),
+        ).all()
+    elif scope == "selection" and body.knowledge_ids:
         kb_docs = db.query(KnowledgeDocument).filter(
             KnowledgeDocument.id.in_(body.knowledge_ids),
             KnowledgeDocument.status == IndexStatus.done,
         ).all()
     else:
-        kb_docs = db.query(KnowledgeDocument).filter(
-            KnowledgeDocument.status == IndexStatus.done,
-            KnowledgeDocument.index_path.isnot(None),
-        ).all()
+        kb_docs = []
 
     for doc in kb_docs:
         if doc.index_path:
@@ -119,36 +138,54 @@ def run_query(
                 "category": doc.category.value if doc.category else None,
             })
 
-    if body.document_ids:
+    # Session documents (SessionDocument — TTL 24h)
+    if scope in ("all", "mine"):
+        session_docs = db.query(SessionDocument).filter(
+            SessionDocument.user_id == user.id,
+            SessionDocument.index_path.isnot(None),
+        ).all()
+    elif scope == "selection" and body.document_ids:
         session_docs = db.query(SessionDocument).filter(
             SessionDocument.id.in_(body.document_ids),
             SessionDocument.user_id == user.id,
         ).all()
-        for doc in session_docs:
-            if doc.index_path:
-                index_entries.append({
-                    "doc_id": f"session_{doc.id}",
-                    "doc_name": doc.original_filename,
-                    "index_path": doc.index_path,
-                    "file_path": doc.file_path,
-                })
+    else:
+        session_docs = []
 
-    if body.my_document_ids:
+    for doc in session_docs:
+        if doc.index_path:
+            index_entries.append({
+                "doc_id": f"session_{doc.id}",
+                "doc_name": doc.original_filename,
+                "index_path": doc.index_path,
+                "file_path": doc.file_path,
+            })
+
+    # User documents (UserDocument — permanente)
+    if scope in ("all", "mine"):
+        user_docs = db.query(UserDocument).filter(
+            UserDocument.user_id == user.id,
+            UserDocument.status == IndexStatus.done,
+        ).all()
+    elif scope == "selection" and body.my_document_ids:
         user_docs = db.query(UserDocument).filter(
             UserDocument.id.in_(body.my_document_ids),
             UserDocument.user_id == user.id,
             UserDocument.status == IndexStatus.done,
         ).all()
-        for doc in user_docs:
-            if doc.index_path:
-                index_entries.append({
-                    "doc_id": f"user_{doc.id}",
-                    "doc_name": doc.name,
-                    "index_path": doc.index_path,
-                    "file_path": doc.file_path,
-                    "description": doc.description,
-                    "category": doc.category.value if doc.category else None,
-                })
+    else:
+        user_docs = []
+
+    for doc in user_docs:
+        if doc.index_path:
+            index_entries.append({
+                "doc_id": f"user_{doc.id}",
+                "doc_name": doc.name,
+                "index_path": doc.index_path,
+                "file_path": doc.file_path,
+                "description": doc.description,
+                "category": doc.category.value if doc.category else None,
+            })
 
     if not index_entries:
         raise HTTPException(status_code=400, detail="Nenhum documento indexado disponível para consulta")
