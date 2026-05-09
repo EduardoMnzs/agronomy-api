@@ -1,9 +1,13 @@
 from pathlib import Path
 
+# Side-effect: registra parser XML seguro antes do python-docx (anti billion-laughs/XXE).
+import defusedxml.ElementTree  # noqa: F401
+
 from docx import Document
 from docx.oxml.ns import qn
 
 from parsers.base import BaseParser, PageRef, ParsedDocument
+from parsers.safety import assert_zip_safe
 
 
 def _table_to_markdown(table) -> str:
@@ -22,6 +26,7 @@ class DOCXParser(BaseParser):
         return [".docx"]
 
     def parse(self, file_path: Path) -> ParsedDocument:
+        assert_zip_safe(file_path)
         doc = Document(str(file_path))
         sections: list[str] = []
         page_map: list[PageRef] = []

@@ -1,4 +1,3 @@
-import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -7,11 +6,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
+from api.uploads import safe_extension, save_upload_sync
 from core.config import settings
 from core.indexer import index_document
 from db.models import SessionDocument, User
 from db.session import get_db
 from parsers.factory import SUPPORTED_EXTENSIONS
+from parsers.safety import UnsafeFileError
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -52,19 +53,17 @@ def upload_document(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Formato não suportado: {suffix}")
+    suffix = safe_extension(file.filename, SUPPORTED_EXTENSIONS)
 
     files_dir = Path(settings.SESSION_FILES_DIR) / str(user.id)
-    files_dir.mkdir(parents=True, exist_ok=True)
-    file_path = files_dir / file.filename
-
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    file_path, _ = save_upload_sync(file, files_dir, suffix)
 
     indexes_dir = Path(settings.SESSION_INDEXES_DIR) / str(user.id)
-    index_path = index_document(file_path, str(indexes_dir))
+    try:
+        index_path = index_document(file_path, str(indexes_dir))
+    except UnsafeFileError as exc:
+        file_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Arquivo rejeitado: {exc}") from exc
 
     now = datetime.utcnow()
     doc = SessionDocument(

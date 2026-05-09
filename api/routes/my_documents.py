@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
+from api.uploads import safe_extension, save_upload_async
 from core.config import settings
 from db.models import DocumentCategory, IndexStatus, User, UserDocument
 from db.session import get_db
@@ -142,21 +142,10 @@ async def upload_user_document(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Formato não suportado: {suffix}")
+    suffix = safe_extension(file.filename, SUPPORTED_EXTENSIONS)
 
     files_dir = Path(settings.USER_DOCS_FILES_DIR) / str(user.id)
-    files_dir.mkdir(parents=True, exist_ok=True)
-    file_path = files_dir / file.filename
-
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    try:
-        file_size = file_path.stat().st_size
-    except OSError:
-        file_size = None
+    file_path, file_size = await save_upload_async(file, files_dir, suffix)
 
     now = datetime.utcnow()
     doc = UserDocument(
@@ -232,6 +221,10 @@ def download_user_document(
     db: Session = Depends(get_db),
 ):
     user_id = _verify_download_token(token, doc_id)
+
+    issuer = db.query(User).filter(User.id == user_id).first()
+    if not issuer or issuer.status.value == "inactive":
+        raise HTTPException(status_code=403, detail="Token não autorizado")
 
     doc = db.query(UserDocument).filter(
         UserDocument.id == doc_id,

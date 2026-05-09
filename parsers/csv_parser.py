@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 from parsers.base import BaseParser, PageRef, ParsedDocument
+from parsers.safety import CSV_MAX_ROWS
 
 MAX_ROWS_PREVIEW = 500
 
@@ -13,7 +14,13 @@ class CSVParser(BaseParser):
         return [".csv"]
 
     def parse(self, file_path: Path) -> ParsedDocument:
-        df = pd.read_csv(file_path, encoding="utf-8", on_bad_lines="skip")
+        df = pd.read_csv(
+            file_path,
+            encoding="utf-8",
+            on_bad_lines="skip",
+            nrows=CSV_MAX_ROWS,
+            low_memory=True,
+        )
         return self._df_to_parsed(df, file_path.name, "csv")
 
     @staticmethod

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,6 +12,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, require_admin
+from api.uploads import safe_extension, save_upload_async
 from core.config import settings
 from db.models import DocumentCategory, IndexStatus, KnowledgeDocument, QueryLog, User
 from db.session import get_db
@@ -76,22 +76,24 @@ def _serialize(d: KnowledgeDocument) -> KnowledgeDocumentOut:
     )
 
 
-def _make_download_token(doc_id: int) -> str:
+def _make_download_token(doc_id: int, user_id: int) -> str:
     payload = {
         "doc_id": doc_id,
+        "user_id": user_id,
         "type": "download",
         "exp": datetime.utcnow() + timedelta(minutes=_DOWNLOAD_TOKEN_TTL_MIN),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def _verify_download_token(token: str, doc_id: int) -> None:
+def _verify_download_token(token: str, doc_id: int) -> int:
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     except JWTError:
         raise HTTPException(status_code=401, detail="Token inválido ou expirado")
     if payload.get("type") != "download" or int(payload.get("doc_id", -1)) != doc_id:
         raise HTTPException(status_code=403, detail="Token não autorizado para este documento")
+    return int(payload.get("user_id", -1))
 
 
 def _read_text_preview(file_path: str, file_type: str) -> str | None:
@@ -133,21 +135,10 @@ async def upload_knowledge(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Formato não suportado: {suffix}")
+    suffix = safe_extension(file.filename, SUPPORTED_EXTENSIONS)
 
     files_dir = Path(settings.KNOWLEDGE_FILES_DIR)
-    files_dir.mkdir(parents=True, exist_ok=True)
-    file_path = files_dir / file.filename
-
-    with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    try:
-        file_size = file_path.stat().st_size
-    except OSError:
-        file_size = None
+    file_path, file_size = await save_upload_async(file, files_dir, suffix)
 
     doc = KnowledgeDocument(
         name=name,
@@ -218,7 +209,7 @@ def get_knowledge(
     doc_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == doc_id).first()
     if not doc:
@@ -229,7 +220,7 @@ def get_knowledge(
 
     ft = (doc.file_type or "").lower()
 
-    token = _make_download_token(doc.id)
+    token = _make_download_token(doc.id, user.id)
     detail.url = str(request.url_for("download_knowledge_file", doc_id=doc.id)) + f"?token={token}"
 
     if ft in _TEXT_PREVIEW_TYPES:
@@ -244,7 +235,12 @@ def download_knowledge_file(
     token: str = Query(...),
     db: Session = Depends(get_db),
 ):
-    _verify_download_token(token, doc_id)
+    user_id = _verify_download_token(token, doc_id)
+
+    # Revoga downloads de tokens emitidos por usuários deletados/desativados.
+    issuer = db.query(User).filter(User.id == user_id).first()
+    if not issuer or issuer.status.value == "inactive":
+        raise HTTPException(status_code=403, detail="Token não autorizado")
 
     doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == doc_id).first()
     if not doc or not doc.file_path:

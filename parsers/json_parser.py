@@ -1,10 +1,13 @@
-import json
 from pathlib import Path
 
 from parsers.base import BaseParser, PageRef, ParsedDocument
+from parsers.safety import JSON_MAX_DEPTH, safe_load_json
 
 
-def _json_to_text(data, indent: int = 0) -> str:
+def _json_to_text(data, indent: int = 0, depth: int = 0) -> str:
+    if depth > JSON_MAX_DEPTH:
+        return f"{'  ' * indent}[... aninhamento excessivo ...]"
+
     prefix = "  " * indent
     lines = []
 
@@ -12,14 +15,14 @@ def _json_to_text(data, indent: int = 0) -> str:
         for key, value in data.items():
             if isinstance(value, (dict, list)):
                 lines.append(f"{prefix}**{key}:**")
-                lines.append(_json_to_text(value, indent + 1))
+                lines.append(_json_to_text(value, indent + 1, depth + 1))
             else:
                 lines.append(f"{prefix}- **{key}:** {value}")
     elif isinstance(data, list):
         for i, item in enumerate(data):
             if isinstance(item, (dict, list)):
                 lines.append(f"{prefix}Item {i + 1}:")
-                lines.append(_json_to_text(item, indent + 1))
+                lines.append(_json_to_text(item, indent + 1, depth + 1))
             else:
                 lines.append(f"{prefix}- {item}")
     else:
@@ -34,8 +37,7 @@ class JSONParser(BaseParser):
         return [".json"]
 
     def parse(self, file_path: Path) -> ParsedDocument:
-        with open(file_path, encoding="utf-8") as f:
-            data = json.load(f)
+        data = safe_load_json(file_path)
 
         if isinstance(data, list):
             sections = []

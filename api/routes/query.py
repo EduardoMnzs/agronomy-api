@@ -9,8 +9,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user
+from core.config import settings
 from core.query_engine import QueryResult, query
-from db.models import Conversation, IndexStatus, KnowledgeDocument, QueryLog, SessionDocument, User, UserDocument
+from db.models import Conversation, IndexStatus, KnowledgeDocument, QueryLog, SessionDocument, User, UserDocument, UserRole
 from db.session import get_db
 
 router = APIRouter(prefix="/query", tags=["query"])
@@ -67,6 +68,22 @@ class QueryResponse(BaseModel):
     model_used: str
 
 
+def _resolve_model(requested: str | None, user: User) -> str | None:
+    # Param `model` só passa se admin ou estiver na allowlist; caso contrário,
+    # silenciosamente cai para settings.query_model.
+    if not requested:
+        return None
+    requested = requested.strip()
+    if not requested:
+        return None
+    allowed = settings.allowed_llm_models
+    if user.role == UserRole.admin:
+        return requested
+    if allowed and requested in allowed:
+        return requested
+    return None
+
+
 @router.post("", response_model=QueryResponse)
 def run_query(
     body: QueryRequest,
@@ -75,6 +92,8 @@ def run_query(
 ):
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Pergunta não pode ser vazia")
+
+    chosen_model = _resolve_model(body.model, user)
 
     index_entries: list[dict] = []
 
@@ -159,7 +178,7 @@ def run_query(
             question=body.question,
             index_entries=index_entries,
             user_data=merged_user_data or None,
-            model=body.model,
+            model=chosen_model,
             history=history,
         )
     except Exception as exc:
@@ -168,7 +187,7 @@ def run_query(
             user_id=user.id,
             conversation_id=body.conversation_id,
             question=body.question,
-            model_used=body.model,
+            model_used=chosen_model,
             latency_ms=int((time.monotonic() - started) * 1000),
             success=False,
             error_message=str(exc)[:1000],
@@ -261,7 +280,11 @@ def _upsert_conversation(
     ]
 
     if conv:
-        conv.messages = (conv.messages or []) + new_messages
+        merged = (conv.messages or []) + new_messages
+        cap = settings.CONVERSATION_MAX_MESSAGES
+        if len(merged) > cap:
+            merged = merged[-cap:]
+        conv.messages = merged
         conv.updated_at = datetime.utcnow()
     else:
         title = question[:60] + ("…" if len(question) > 60 else "")
