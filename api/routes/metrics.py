@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -25,6 +25,16 @@ class DailyPoint(BaseModel):
     errors: int
 
 
+class FeedbackEntry(BaseModel):
+    log_id: int
+    user_name: str | None
+    user_email: str | None
+    rating: int
+    question: str
+    feedback_text: str | None
+    feedback_at: str | None
+
+
 class MetricsResponse(BaseModel):
     range_days: int
     total_queries: int
@@ -38,6 +48,7 @@ class MetricsResponse(BaseModel):
     feedback_negative: int
     top_models: list[ModelUsage]
     daily: list[DailyPoint]
+    feedbacks: list[FeedbackEntry]
 
 
 def _percentile(sorted_values: list[int], pct: float) -> int | None:
@@ -45,6 +56,23 @@ def _percentile(sorted_values: list[int], pct: float) -> int | None:
         return None
     k = max(0, min(len(sorted_values) - 1, int(round((pct / 100.0) * (len(sorted_values) - 1)))))
     return sorted_values[k]
+
+
+def _build_daily_series(daily_rows, since_date: date, end_date: date) -> list[DailyPoint]:
+    # Mapeia dia -> (total, erros). func.date() retorna date no Postgres.
+    day_map: dict[str, tuple[int, int]] = {}
+    for d, t, e in daily_rows:
+        key = d.isoformat() if hasattr(d, "isoformat") else str(d)
+        day_map[key] = (int(t or 0), int(e or 0))
+
+    points: list[DailyPoint] = []
+    cursor = since_date
+    while cursor <= end_date:
+        key = cursor.isoformat()
+        total, errors = day_map.get(key, (0, 0))
+        points.append(DailyPoint(date=key, total=total, errors=errors))
+        cursor += timedelta(days=1)
+    return points
 
 
 @router.get("", response_model=MetricsResponse)
@@ -98,9 +126,30 @@ def get_metrics(
         .order_by("day")
         .all()
     )
-    daily = [
-        DailyPoint(date=str(d), total=int(t or 0), errors=int(e or 0))
-        for d, t, e in daily_rows
+    daily = _build_daily_series(daily_rows, since.date(), now.date())
+
+    feedback_rows = (
+        db.query(QueryLog, User)
+        .outerjoin(User, User.id == QueryLog.user_id)
+        .filter(
+            QueryLog.created_at >= since,
+            QueryLog.rating.isnot(None),
+        )
+        .order_by(QueryLog.feedback_at.desc().nullslast(), QueryLog.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    feedbacks = [
+        FeedbackEntry(
+            log_id=log.id,
+            user_name=(user.full_name if user else None),
+            user_email=(user.email if user else None),
+            rating=log.rating,
+            question=(log.question or "")[:300],
+            feedback_text=log.feedback_text,
+            feedback_at=(log.feedback_at.isoformat() if log.feedback_at else (log.created_at.isoformat() if log.created_at else None)),
+        )
+        for log, user in feedback_rows
     ]
 
     return MetricsResponse(
@@ -116,4 +165,5 @@ def get_metrics(
         feedback_negative=neg,
         top_models=top_models,
         daily=daily,
+        feedbacks=feedbacks,
     )
