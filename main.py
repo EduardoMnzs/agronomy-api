@@ -13,7 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from api.rate_limit import limiter, rate_limit_exceeded_handler
-from api.routes import access_requests, auth, conversations, documents, knowledge, my_documents, query, search as search_routes, settings as settings_routes, users
+from api.routes import access_requests, auth, conversations, documents, knowledge, metrics as metrics_routes, my_documents, query, search as search_routes, settings as settings_routes, users
 from core.config import settings
 from db.models import KnowledgeDocument
 from db.session import SessionLocal, engine
@@ -128,6 +128,7 @@ app.include_router(users.router)
 app.include_router(settings_routes.router)
 app.include_router(search_routes.router)
 app.include_router(access_requests.router)
+app.include_router(metrics_routes.router)
 
 
 @app.get("/health", tags=["infra"])

@@ -182,6 +182,11 @@ class QueryLog(Base):
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(tz=timezone.utc).replace(tzinfo=None), nullable=False, index=True)
 
+    # Feedback do usuário sobre a resposta: 1 = 👍, -1 = 👎, NULL = sem feedback.
+    rating = Column(Integer, nullable=True, index=True)
+    feedback_text = Column(Text, nullable=True)
+    feedback_at = Column(DateTime, nullable=True)
+
     __table_args__ = (
         Index("ix_query_logs_created_success", "created_at", "success"),
     )

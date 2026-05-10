@@ -71,6 +71,12 @@ class QueryResponse(BaseModel):
     answer: str
     sources: list[SourceOut]
     model_used: str
+    query_log_id: int | None = None
+
+
+class FeedbackRequest(BaseModel):
+    rating: Literal[-1, 1]
+    feedback_text: str | None = None
 
 
 def _resolve_scope(body: "QueryRequest") -> QueryScope:
@@ -240,7 +246,7 @@ def run_query(
 
     conv = _upsert_conversation(db, user.id, body.conversation_id, body.question, result.answer, sources_out)
 
-    _log_query(
+    log_id = _log_query(
         db,
         user_id=user.id,
         conversation_id=str(conv.id),
@@ -251,12 +257,42 @@ def run_query(
         error_message=None,
     )
 
+    # Persiste o log_id na última mensagem da conversa para que o botão de
+    # feedback continue funcionando quando a conversa for recarregada.
+    if log_id and conv.messages:
+        msgs = list(conv.messages)
+        if msgs and msgs[-1].get("role") == "assistant":
+            msgs[-1] = {**msgs[-1], "query_log_id": log_id}
+            conv.messages = msgs
+            db.commit()
+
     return QueryResponse(
         conversation_id=str(conv.id),
         answer=result.answer,
         sources=sources_out,
         model_used=result.model_used,
+        query_log_id=log_id,
     )
+
+
+@router.post("/{log_id}/feedback", status_code=204)
+def submit_feedback(
+    log_id: int,
+    body: FeedbackRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    log = db.query(QueryLog).filter(
+        QueryLog.id == log_id,
+        QueryLog.user_id == user.id,
+    ).first()
+    if not log:
+        raise HTTPException(status_code=404, detail="Resposta não encontrada")
+
+    log.rating = body.rating
+    log.feedback_text = (body.feedback_text or "").strip()[:2000] or None
+    log.feedback_at = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+    db.commit()
 
 
 def _log_query(
@@ -269,7 +305,7 @@ def _log_query(
     latency_ms: int,
     success: bool,
     error_message: str | None,
-) -> None:
+) -> int | None:
     try:
         conv_uuid: uuid.UUID | None = None
         if conversation_id:
@@ -277,7 +313,7 @@ def _log_query(
                 conv_uuid = uuid.UUID(conversation_id)
             except ValueError:
                 conv_uuid = None
-        db.add(QueryLog(
+        log = QueryLog(
             user_id=user_id,
             conversation_id=conv_uuid,
             question=question[:4000],
@@ -285,10 +321,13 @@ def _log_query(
             latency_ms=latency_ms,
             success=success,
             error_message=error_message,
-        ))
+        )
+        db.add(log)
         db.commit()
+        return log.id
     except Exception:
         db.rollback()
+        return None
 
 
 def _upsert_conversation(
