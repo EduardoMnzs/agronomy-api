@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 
 import pymupdf
@@ -12,6 +13,33 @@ from core.indexer import load_index
 logger = logging.getLogger(__name__)
 
 _MAX_CONTENT_CHARS = 40_000
+
+
+def _open_pdf(file_path: str | None):
+    """Abre um PDF resolvendo via storage (local FS ou S3).
+
+    Em modo S3 o `file_path` armazenado no banco é uma chave de objeto, não um
+    caminho local — pymupdf.open() falharia. Esta função baixa os bytes em
+    memória nesse caso e abre via stream.
+    """
+    if not file_path:
+        return None
+    from core.storage import download_bytes, resolve_local_path
+
+    local = resolve_local_path(file_path)
+    if local and local.exists():
+        return pymupdf.open(str(local))
+
+    p = Path(file_path)
+    if p.exists():
+        return pymupdf.open(str(p))
+
+    try:
+        data = download_bytes(file_path)
+        return pymupdf.open(stream=BytesIO(data), filetype="pdf")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Falha ao abrir PDF %s via storage: %s", file_path, e)
+        return None
 
 
 @dataclass
@@ -44,11 +72,12 @@ def build_context(entry: dict) -> DocContext:
 
     total_pages = None
     if is_pdf:
-        try:
-            with pymupdf.open(file_path) as doc:
+        doc = _open_pdf(file_path)
+        if doc is not None:
+            try:
                 total_pages = len(doc)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to read PDF %s: %s", file_path, e)
+            finally:
+                doc.close()
 
     return DocContext(
         doc_id=str(entry["doc_id"]),
@@ -147,10 +176,17 @@ def _parse_pages(pages: str) -> list[int]:
 def _pdf_page_content(ctx: DocContext, page_nums: list[int]) -> list[dict]:
     if ctx.pages_cache is None:
         pages: list[str] = []
-        with pymupdf.open(ctx.file_path) as doc:
-            for page in doc:
-                pages.append(page.get_text() or "")
-        ctx.pages_cache = pages
+        doc = _open_pdf(ctx.file_path)
+        if doc is None:
+            logger.warning("Não foi possível abrir PDF para extrair páginas: %s", ctx.file_path)
+            ctx.pages_cache = []
+        else:
+            try:
+                for page in doc:
+                    pages.append(page.get_text() or "")
+                ctx.pages_cache = pages
+            finally:
+                doc.close()
 
     total = len(ctx.pages_cache)
     out = []
