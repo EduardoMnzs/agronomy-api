@@ -62,6 +62,33 @@ são grandezas diferentes.
 Não invente fatos. Não responda fora dos documentos. Seja conciso e técnico."""
 
 
+_PROFILE_RULES = """\
+
+CONTEXTO DO PERFIL DO USUÁRIO (metadados de configuração da conta, NÃO fazem \
+parte da pergunta):
+{profile_lines}
+
+Regras ABSOLUTAS sobre esse perfil:
+- Ele existe apenas para você DESEMPATAR e PRIORIZAR informação quando o \
+documento trouxer variações por região, cultura, sistema de plantio ou unidade. \
+Ex.: se o documento tem doses por bioma, prefira a do bioma do perfil.
+- NUNCA mencione, cite, liste ou repita esses valores na resposta.
+- NUNCA trate o perfil como parte da pergunta. Se o usuário perguntou "o que \
+fala no documento", responda sobre o documento — não sobre o perfil.
+- NUNCA comente que o documento não cobre o estado, município, bioma, cultura \
+ou unidade do perfil. A ausência disso no documento é irrelevante e não deve \
+ser reportada.
+- Se o perfil não ajudar a responder, ignore-o por completo e em silêncio."""
+
+
+def _profile_block(profile: dict | None) -> str:
+    """Bloco de sistema com o perfil. Vazio quando não há perfil."""
+    if not profile:
+        return ""
+    lines = "\n".join(f"- {k}: {v}" for k, v in profile.items())
+    return _PROFILE_RULES.format(profile_lines=lines)
+
+
 TOOLS_SCHEMA = [
     {
         "type": "function",
@@ -304,11 +331,28 @@ def run_agent(
     question: str,
     doc_ctxs: dict[str, DocContext],
     user_data: dict | None = None,
+    profile: dict | None = None,
     model: str | None = None,
     history: list[dict] | None = None,
 ) -> AgentResult:
+    """Roda o agente.
+
+    `user_data` são dados que o usuário enviou JUNTO da pergunta (ex.: valores
+    de uma análise de solo para cálculo) — fazem parte do pedido e podem ser
+    citados livremente.
+
+    `profile` são metadados de configuração da conta (estado, município, bioma,
+    cultura, unidade). São contexto ambiente: servem para desempatar variações
+    do documento, e o modelo é instruído a nunca mencioná-los. Antes os dois
+    iam juntos no fim da mensagem do usuário, e o modelo passou a tratar o
+    perfil como parte da pergunta — respondendo coisas como "não há informação
+    sobre o estado de São Paulo, o município de Marília ou o bioma Mata
+    Atlântica", que é ruído de configuração vazando para o usuário.
+    """
     used_model = model or settings.agent_model
     trace = RetrievalTrace()
+
+    system_prompt = AGENT_SYSTEM + _profile_block(profile)
 
     user_block = question.strip()
     if user_data:
@@ -384,7 +428,7 @@ def run_agent(
             messages=messages,
             tools=TOOLS_SCHEMA,
             model=used_model,
-            system=AGENT_SYSTEM,
+            system=system_prompt,
         )
         tool_calls = getattr(msg, "tool_calls", None) or []
 
@@ -438,7 +482,7 @@ def run_agent(
         messages=messages,
         tools=TOOLS_SCHEMA,
         model=used_model,
-        system=AGENT_SYSTEM,
+        system=system_prompt,
     )
     return AgentResult(
         answer=final_msg.content or "Não foi possível concluir com o orçamento disponível.",

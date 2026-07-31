@@ -210,17 +210,33 @@ def run_query(
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
 
-    # Merge perfil do usuário (persistido) com user_data enviado na request.
-    merged_user_data = _profile_context(user)
-    if body.user_data:
-        merged_user_data.update({k: v for k, v in body.user_data.items() if v not in (None, "")})
+    # Perfil e user_data NÃO são a mesma coisa e vão separados ao agente:
+    #
+    #   profile   → metadados de configuração da conta (estado, município,
+    #               bioma, cultura). Contexto ambiente, para desempatar
+    #               variações do documento. O agente é instruído a nunca
+    #               mencioná-lo.
+    #   user_data → dados que o usuário enviou junto da pergunta (ex.: valores
+    #               de análise de solo). Fazem parte do pedido e podem ser
+    #               citados e usados em cálculo.
+    #
+    # Antes os dois eram mesclados num dict só e anexados ao fim da mensagem do
+    # usuário, então o modelo lia o perfil como parte da pergunta e respondia
+    # coisas como "não há informação sobre o estado de São Paulo, o município de
+    # Marília ou o bioma Mata Atlântica" — configuração vazando para o usuário.
+    profile = _profile_context(user)
+    request_data = (
+        {k: v for k, v in body.user_data.items() if v not in (None, "")}
+        if body.user_data else {}
+    )
 
     started = time.monotonic()
     try:
         result: QueryResult = query(
             question=body.question,
             index_entries=index_entries,
-            user_data=merged_user_data or None,
+            user_data=request_data or None,
+            profile=profile or None,
             model=chosen_model,
             history=history,
         )

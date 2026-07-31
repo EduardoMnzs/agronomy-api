@@ -77,6 +77,7 @@ def query(
     question: str,
     index_entries: list[dict],
     user_data: dict | None = None,
+    profile: dict | None = None,
     model: str | None = None,
     history: list[dict] | None = None,
 ) -> QueryResult:
@@ -144,6 +145,7 @@ def query(
         question=question,
         doc_ctxs=doc_ctxs,
         user_data=user_data,
+        profile=profile,
         model=used_model,
         history=history,
     )
@@ -211,10 +213,20 @@ Regras:
 - Se a informação não estiver nos documentos, diga explicitamente.
 
 Pergunta: {question}
-{user_data_block}
+{user_data_block}{profile_block}
 
 Documentos:
 {context}"""
+
+# Perfil = metadados de configuração da conta, não parte da pergunta. Mesmas
+# regras do agente (ver core/agent.py::_PROFILE_RULES).
+PROFILE_BLOCK_TEMPLATE = """
+Contexto do perfil do usuário (configuração da conta, NÃO faz parte da pergunta):
+{lines}
+Use apenas para desempatar variações do documento (região, cultura, unidade).
+NUNCA mencione esses valores na resposta e NUNCA comente que o documento não
+cobre o estado, município, bioma ou cultura do perfil.
+"""
 
 
 _MAX_NODE_CHARS = 40_000
@@ -317,6 +329,7 @@ def query_single_shot(
     question: str,
     index_entries: list[dict],
     user_data: dict | None = None,
+    profile: dict | None = None,
     model: str | None = None,
 ) -> QueryResult:
     """Legacy one-pass identifier → extractor → answer pipeline."""
@@ -342,9 +355,15 @@ def query_single_shot(
         lines = "\n".join(f"- {k}: {v}" for k, v in user_data.items())
         user_data_block = f"\nDados fornecidos pelo usuário:\n{lines}\n"
 
+    profile_block = ""
+    if profile:
+        lines = "\n".join(f"- {k}: {v}" for k, v in profile.items())
+        profile_block = PROFILE_BLOCK_TEMPLATE.format(lines=lines)
+
     prompt = ANSWER_PROMPT.format(
         question=question,
         user_data_block=user_data_block,
+        profile_block=profile_block,
         context=context,
     )
     raw_answer = _llm(prompt, used_model)
