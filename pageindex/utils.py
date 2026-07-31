@@ -23,7 +23,30 @@ if not os.getenv("OPENAI_API_KEY") and os.getenv("CHATGPT_API_KEY"):
 
 litellm.drop_params = True
 
-_llm_semaphore = asyncio.Semaphore(3)
+_LLM_CONCURRENCY = 3
+
+# Limita chamadas concorrentes ao LLM. Instanciar no nível de módulo prende o
+# semáforo ao primeiro event loop que o usar: quando o worker (ARQ) roda o job
+# seguinte com `asyncio.run`, o loop anterior já fechou e o Semaphore lança
+# "is bound to a different event loop" — a indexação falha a partir do 2º
+# documento no mesmo processo.
+#
+# Cache de slot único (loop, semáforo), e não um dict por loop: só um event loop
+# roda por vez neste processo, então basta descartar o par quando o loop troca.
+# Um dict cresceria a cada job para sempre — o semáforo guarda `_loop` apontando
+# para o loop, então nem WeakKeyDictionary libera a entrada (o valor mantém a
+# chave viva).
+_llm_semaphore_slot: "tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None" = None
+
+
+def _get_llm_semaphore() -> asyncio.Semaphore:
+    global _llm_semaphore_slot
+    loop = asyncio.get_running_loop()
+    if _llm_semaphore_slot is not None and _llm_semaphore_slot[0] is loop:
+        return _llm_semaphore_slot[1]
+    sem = asyncio.Semaphore(_LLM_CONCURRENCY)
+    _llm_semaphore_slot = (loop, sem)
+    return sem
 
 def count_tokens(text, model=None):
     if not text:
@@ -70,7 +93,7 @@ async def llm_acompletion(model, prompt):
     messages = [{"role": "user", "content": prompt}]
     for i in range(max_retries):
         try:
-            async with _llm_semaphore:
+            async with _get_llm_semaphore():
                 response = await litellm.acompletion(
                     model=model,
                     messages=messages,

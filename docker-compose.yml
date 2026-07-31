@@ -1,8 +1,10 @@
 services:
   db:
     image: postgres:16-alpine
-    ports:
-      - "127.0.0.1:5432:5432"
+    # Sem mapeamento de porta no host aqui — em produção a API alcança o banco
+    # pela rede interna do docker. O docker-compose.dev.yml expõe 5433 para o
+    # desenvolvimento local. (Listas de `ports` são concatenadas na sobreposição:
+    # declarar 5432 aqui faria o dev tentar bindar 5432 E 5433.)
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-agronomy}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD em .env}
@@ -61,6 +63,9 @@ services:
       - DATABASE_URL=postgresql+psycopg2://${POSTGRES_USER:-agronomy}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-agronomy}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - SKIP_MIGRATIONS=1
+    # Worker não expõe HTTP — desativa o healthcheck herdado da imagem (que bate em :8000).
+    healthcheck:
+      disable: true
     depends_on:
       db:
         condition: service_healthy

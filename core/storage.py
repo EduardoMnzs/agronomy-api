@@ -19,6 +19,21 @@ _index_cache: TTLCache = TTLCache(maxsize=128, ttl=300)
 _storage_singleton: "_LocalStorage | _S3Storage | None" = None
 
 
+def normalize_key(key) -> str:
+    """Troca '\\' por '/' numa chave de storage.
+
+    Chaves gravadas em host Windows (uvicorn local) chegam como
+    ``data\\knowledge\\files\\x.pdf``. Num container Linux, '\\' é caractere
+    válido de nome de arquivo, então ``Path`` NÃO separa os componentes e o
+    arquivo nunca é encontrado. Normalizar na escrita e na leitura mantém a
+    chave portável entre os dois.
+
+    Fica como função de módulo — e não inline — para ser testável sem depender
+    do SO onde a suíte roda: no Windows o próprio ``Path`` mascara o bug.
+    """
+    return str(key).replace("\\", "/")
+
+
 def _to_key(path: Path | str) -> str:
     """Strip DATA_DIR prefix from a path to produce a normalised storage key.
 
@@ -26,8 +41,8 @@ def _to_key(path: Path | str) -> str:
     and already-normalised keys (``knowledge/files/x``).
     """
     from core.config import settings
-    p = str(path).replace("\\", "/")
-    prefix = settings.DATA_DIR.rstrip("/").replace("\\", "/") + "/"
+    p = normalize_key(path)
+    prefix = normalize_key(settings.DATA_DIR.rstrip("/")) + "/"
     return p[len(prefix):] if p.startswith(prefix) else p
 
 
@@ -36,7 +51,7 @@ class _LocalStorage:
         self._base = Path(base)
 
     def _p(self, key: str) -> Path:
-        p = Path(key)
+        p = Path(normalize_key(key))
         if p.is_absolute():
             return p
         # Avoid double-prefix for old-style keys that already include base dir
@@ -236,10 +251,13 @@ def finalize_to_storage(local_path: Path) -> str:
     """Upload local_path to S3 (S3 mode) or return str path (local mode).
 
     In S3 mode the local file is deleted after upload.
+
+    The returned path always uses forward slashes so it can be safely consumed
+    across OSes (e.g. Windows API + Linux worker).
     """
     from core.config import settings
     if settings.STORAGE_BACKEND != "s3":
-        return str(local_path)
+        return normalize_key(local_path)
     key = _to_key(local_path)
     _storage().upload_from_path(key, local_path)
     local_path.unlink(missing_ok=True)
