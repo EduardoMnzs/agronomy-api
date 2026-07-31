@@ -1,13 +1,21 @@
 """
 Citation utilities.
 
-Two inline formats are supported in agent answers:
-  - [doc_id:page]  e.g. [3:27]  (preferred — page-level precision)
-  - [N]            e.g. [1]     (legacy — node-level, kept for backwards compat)
+O único formato válido nas respostas do agente é ``[doc_id:page]`` (ex.: [3:27]).
 
-extract_inline_citations() walks the answer text, replaces each marker with a
-sequential [N] so the final text uses a clean 1..n ordering, and returns the
-list of Source objects matching each N.
+Não interpretamos mais ``[N]`` solto. Antes havia um fallback que lia ``[N]``
+como índice 1-based em ``pages_read`` — convenção do pipeline antigo, baseado em
+nós. Com o agente atual, que usa doc_id nos marcadores, as duas convenções
+colidem de forma silenciosa e perigosa: o agente escreve ``[6]`` querendo dizer
+"documento 6", e o fallback devolvia a 6ª página lida (ex.: pág. 26), gerando uma
+citação ERRADA com aparência de correta. Fonte errada é pior que fonte ausente —
+o usuário clica, abre a página errada e não tem como perceber.
+
+Marcador que não resolve para uma fonte é REMOVIDO do texto, em vez de virar link
+morto na UI. Mesmo tratamento que já se dava a doc_id fora do catálogo.
+
+extract_inline_citations() percorre a resposta, troca cada marcador válido por um
+[N] sequencial (numeração limpa 1..n) e devolve a lista de Source correspondente.
 """
 from __future__ import annotations
 
@@ -26,7 +34,15 @@ class Source:
 
 # Matches [3:27] or [session_5:12] — allows alnum + underscore in doc_id
 _PAGE_CITE_RE = re.compile(r"\[([A-Za-z0-9_\-]+):(\d+)\]")
-_LEGACY_CITE_RE = re.compile(r"\[(\d+)\]")
+# Marcador só com doc_id, sem página (ex.: "[6]"). Não é citação válida: sem
+# página não há o que abrir. Removido do texto para não deixar link morto.
+_BARE_CITE_RE = re.compile(r"\[[A-Za-z0-9_\-]+\]")
+
+# Sentinelas usados enquanto reescrevemos, para que a limpeza de marcadores sem
+# página não apague as citações válidas recém-numeradas. Caracteres de controle
+# porque não podem aparecer no texto do LLM.
+_REF_OPEN = "\x00"
+_REF_CLOSE = "\x01"
 
 
 def _section_for(pages_read: list[dict], doc_id: str, page: int) -> tuple[str, str]:
@@ -81,35 +97,23 @@ def extract_inline_citations(
                     section=section,
                 )
             )
-        return f"[{order[key]}]"
+        # Emite um sentinela, não o `[N]` final. Se escrevêssemos `[1]` aqui, a
+        # limpeza de marcadores sem página logo abaixo apagaria a própria
+        # citação que acabamos de criar — `[1]` também casa `[doc_id]`.
+        return f"{_REF_OPEN}{order[key]}{_REF_CLOSE}"
 
     rewritten = _PAGE_CITE_RE.sub(_replace, answer)
 
-    # If no page-level cites but legacy [N] used, fall back to pages_read order.
-    if not sources and pages_read:
-        seen: dict[int, int] = {}
+    # O que sobrou entre colchetes não tem página (`[6]`, `[abc]`), logo não vira
+    # fonte. Remove para não renderizar link morto na UI.
+    rewritten = _BARE_CITE_RE.sub("", rewritten)
 
-        def _legacy(match: re.Match) -> str:
-            n = int(match.group(1))
-            if n in seen:
-                return f"[{seen[n]}]"
-            if 1 <= n <= len(pages_read):
-                entry = pages_read[n - 1]
-                new_ref = len(sources) + 1
-                sources.append(
-                    Source(
-                        ref=new_ref,
-                        doc_id=entry.get("doc_id", ""),
-                        doc_name=entry.get("doc_name", ""),
-                        page=entry.get("page", 1),
-                        section=entry.get("title", ""),
-                    )
-                )
-                seen[n] = new_ref
-                return f"[{new_ref}]"
-            return match.group(0)
+    # Sentinelas de volta para a forma visível.
+    rewritten = rewritten.replace(_REF_OPEN, "[").replace(_REF_CLOSE, "]")
 
-        rewritten = _LEGACY_CITE_RE.sub(_legacy, rewritten)
+    # A remoção pode deixar " ." ou espaço duplo.
+    rewritten = re.sub(r" +([.,;:!?])", r"\1", rewritten)
+    rewritten = re.sub(r"[ \t]{2,}", " ", rewritten)
 
     return rewritten, sources
 
