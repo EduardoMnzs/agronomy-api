@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Suíte de testes. Precisa de um Postgres acessível pelo DATABASE_URL do .env —
+# o conftest cria/usa um banco separado `agronomy_test`, nunca o de dev.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
+#   python -m pytest tests/ -q
+pytest>=8.0.0

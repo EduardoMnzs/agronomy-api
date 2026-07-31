@@ -3,7 +3,7 @@ from enum import Enum as PyEnum
 
 import uuid
 from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Enum, Text, JSON
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import relationship, DeclarativeBase
 
 
@@ -72,6 +72,9 @@ class KnowledgeDocument(Base):
     file_path = Column(String(1024), nullable=False)
     index_path = Column(String(1024), nullable=True)
     category = Column(Enum(DocumentCategory), default=DocumentCategory.outro)
+    # Rótulos livres, complementares à categoria (que é um enum fechado). Índice
+    # GIN em `tags` — ver alembic 20260730_1000_document_tags.
+    tags = Column(ARRAY(String(64)), nullable=False, server_default="{}")
     description = Column(Text, nullable=True)
     indexed_at = Column(DateTime, nullable=True)
     indexed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

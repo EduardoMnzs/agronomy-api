@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel
-from sqlalchemy import case, func
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from api.deps import get_current_user, public_url, require_admin
@@ -43,8 +44,10 @@ class KnowledgeDocumentOut(BaseModel):
     original_filename: str
     file_type: str
     category: str
+    tags: list[str] = []
     description: str | None
     indexed_at: str | None
+    indexed_by_name: str | None = None
     status: str
     status_message: str | None
 
@@ -63,15 +66,66 @@ class KnowledgeStats(BaseModel):
     health_score: int
 
 
-def _serialize(d: KnowledgeDocument) -> KnowledgeDocumentOut:
+_MAX_TAGS = 12
+_MAX_TAG_LEN = 64
+
+
+def _normalize_tags(raw) -> list[str]:
+    """Trim, dedup (case-insensitive), cap length and count. Accepts list or
+    JSON/CSV string (multipart form sends strings)."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                # Um objeto JSON não é uma lista de tags — virar str(dict) geraria
+                # uma "tag" lixo. Trata como entrada inválida.
+                return []
+            items = parsed if isinstance(parsed, list) else [parsed]
+        except (ValueError, TypeError):
+            items = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        tag = str(item).strip()[:_MAX_TAG_LEN]
+        if not tag:
+            continue
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+        if len(out) >= _MAX_TAGS:
+            break
+    return out
+
+
+def _display_name(full_name: str | None, email: str | None) -> str | None:
+    if full_name and full_name.strip():
+        return full_name.strip()
+    return email
+
+
+def _serialize(d: KnowledgeDocument, indexed_by_name: str | None = None) -> KnowledgeDocumentOut:
     return KnowledgeDocumentOut(
         id=d.id,
         name=d.name,
         original_filename=d.original_filename,
         file_type=d.file_type,
         category=d.category.value if d.category else "outro",
+        tags=list(d.tags or []),
         description=d.description,
         indexed_at=d.indexed_at.isoformat() if d.indexed_at else None,
+        indexed_by_name=indexed_by_name,
         status=d.status.value if d.status else "queued",
         status_message=d.status_message,
     )
@@ -115,9 +169,46 @@ def _read_text_preview(file_path: str, file_type: str) -> str | None:
 
 
 @router.get("", response_model=list[KnowledgeDocumentOut])
-def list_knowledge(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    docs = db.query(KnowledgeDocument).order_by(KnowledgeDocument.id.desc()).all()
-    return [_serialize(d) for d in docs]
+def list_knowledge(
+    search: str | None = Query(None),
+    category: list[str] | None = Query(None),
+    tags: list[str] | None = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    q = (
+        db.query(KnowledgeDocument, User.full_name, User.email)
+        .outerjoin(User, KnowledgeDocument.indexed_by == User.id)
+    )
+
+    term = (search or "").strip()
+    if term:
+        like = f"%{term}%"
+        q = q.filter(or_(
+            KnowledgeDocument.name.ilike(like),
+            KnowledgeDocument.original_filename.ilike(like),
+            KnowledgeDocument.description.ilike(like),
+        ))
+
+    cats = [c.strip() for c in (category or []) if c and c.strip()]
+    if cats:
+        q = q.filter(KnowledgeDocument.category.in_(cats))
+
+    # Filtro por tags: documento aparece se possuir QUALQUER uma das tags pedidas
+    # (overlap). Usa o índice GIN.
+    wanted = [t.strip() for t in (tags or []) if t and t.strip()]
+    if wanted:
+        q = q.filter(KnowledgeDocument.tags.overlap(wanted))
+
+    rows = q.order_by(KnowledgeDocument.id.desc()).all()
+    return [_serialize(doc, _display_name(full_name, email)) for doc, full_name, email in rows]
+
+
+@router.get("/tags", response_model=list[str])
+def list_tags(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """Tags distintas em uso na base de conhecimento, em ordem alfabética."""
+    rows = db.query(func.unnest(KnowledgeDocument.tags)).distinct().all()
+    return sorted({r[0] for r in rows if r[0]}, key=lambda s: s.lower())
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=KnowledgeDocumentOut)
@@ -127,6 +218,7 @@ async def upload_knowledge(
     name: str = Form(...),
     category: DocumentCategory = Form(DocumentCategory.outro),
     description: str = Form(""),
+    tags: str = Form(""),
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -142,6 +234,7 @@ async def upload_knowledge(
         file_path=file_key,
         index_path=None,
         category=category,
+        tags=_normalize_tags(tags),
         description=description or None,
         indexed_by=admin.id,
         status=IndexStatus.queued,
@@ -154,7 +247,7 @@ async def upload_knowledge(
     arq: ArqRedis = request.app.state.arq
     await arq.enqueue_job("task_index_document", doc.id)
 
-    return _serialize(doc)
+    return _serialize(doc, _display_name(admin.full_name, admin.email))
 
 
 @router.get("/stats", response_model=KnowledgeStats)
@@ -193,10 +286,16 @@ def get_stats(db: Session = Depends(get_db), _: User = Depends(get_current_user)
 
 @router.get("/{doc_id}/status", response_model=KnowledgeDocumentOut)
 def get_status(doc_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == doc_id).first()
-    if not doc:
+    row = (
+        db.query(KnowledgeDocument, User.full_name, User.email)
+        .outerjoin(User, KnowledgeDocument.indexed_by == User.id)
+        .filter(KnowledgeDocument.id == doc_id)
+        .first()
+    )
+    if not row:
         raise HTTPException(status_code=404, detail="Documento não encontrado")
-    return _serialize(doc)
+    doc, full_name, email = row
+    return _serialize(doc, _display_name(full_name, email))
 
 
 @router.get("/{doc_id}", response_model=KnowledgeDocumentDetail)
@@ -270,6 +369,38 @@ def download_knowledge_file(
         filename=download_name,
         headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
+
+
+class KnowledgeDocumentUpdate(BaseModel):
+    name: str | None = None
+    tags: list[str] | None = None
+
+
+@router.patch("/{doc_id}", response_model=KnowledgeDocumentOut)
+def update_knowledge(
+    doc_id: int,
+    body: KnowledgeDocumentUpdate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="O nome não pode ficar vazio")
+        doc.name = name[:255]
+
+    if body.tags is not None:
+        doc.tags = _normalize_tags(body.tags)
+
+    db.commit()
+    db.refresh(doc)
+
+    issuer = db.query(User).filter(User.id == doc.indexed_by).first() if doc.indexed_by else None
+    return _serialize(doc, _display_name(issuer.full_name, issuer.email) if issuer else None)
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
