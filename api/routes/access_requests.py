@@ -15,6 +15,7 @@ from api.rate_limit import limiter
 from core.config import settings
 from db.models import AccessRequest, AccessRequestStatus, User, UserRole, UserStatus
 from db.session import get_db
+from core.timefmt import utc_iso
 from services.auth import hash_password
 from services.email import access_request_decision_email, send_email
 
@@ -62,8 +63,8 @@ def _serialize(r: AccessRequest) -> AccessRequestOut:
         message=r.message,
         status=r.status.value,
         rejection_reason=r.rejection_reason,
-        created_at=r.created_at.isoformat() + "Z" if r.created_at else "",
-        decided_at=r.decided_at.isoformat() + "Z" if r.decided_at else None,
+        created_at=utc_iso(r.created_at) or "",
+        decided_at=utc_iso(r.decided_at),
     )
 
 
@@ -85,7 +86,7 @@ def create_request(request: Request, body: AccessRequestCreate, db: Session = De
         message=None,
         status=AccessRequestStatus.pending.value,
         rejection_reason=None,
-        created_at=datetime.now(tz=timezone.utc).replace(tzinfo=None).isoformat() + "Z",
+        created_at=utc_iso(datetime.now(tz=timezone.utc)),
         decided_at=None,
     )
 

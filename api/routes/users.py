@@ -15,6 +15,7 @@ from core import storage as store
 from core.config import settings
 from db.models import User, UserRole, UserStatus
 from db.session import get_db
+from core.timefmt import utc_iso
 from services.auth import hash_password, verify_password
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -127,8 +128,8 @@ def _to_out(user: User, request: Request | None = None) -> UserOut:
         email=user.email,
         role=user.role.value,
         status=user.status.value if user.status else UserStatus.active.value,
-        last_active_at=user.last_active_at.isoformat() + "Z" if user.last_active_at else None,
-        created_at=user.created_at.isoformat() + "Z" if user.created_at else None,
+        last_active_at=utc_iso(user.last_active_at),
+        created_at=utc_iso(user.created_at),
         avatar_url=_avatar_url(request, user),
     )
 
@@ -339,7 +340,7 @@ def _profile_out(u: User) -> UserProfileOut:
         main_crop=u.main_crop,
         planting_system=u.planting_system,
         preferred_units=u.preferred_units,
-        profile_updated_at=u.profile_updated_at.isoformat() + "Z" if u.profile_updated_at else None,
+        profile_updated_at=utc_iso(u.profile_updated_at),
     )
 
 

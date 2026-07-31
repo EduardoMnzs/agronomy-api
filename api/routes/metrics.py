@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from api.deps import require_admin
 from db.models import QueryLog, User
 from db.session import get_db
+from core.timefmt import utc_iso
 
 router = APIRouter(prefix="/admin/metrics", tags=["admin"])
 
@@ -147,7 +148,7 @@ def get_metrics(
             rating=log.rating,
             question=(log.question or "")[:300],
             feedback_text=log.feedback_text,
-            feedback_at=(log.feedback_at.isoformat() if log.feedback_at else (log.created_at.isoformat() if log.created_at else None)),
+            feedback_at=(utc_iso(log.feedback_at) or utc_iso(log.created_at)),
         )
         for log, user in feedback_rows
     ]

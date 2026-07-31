@@ -17,6 +17,7 @@ from core.config import settings
 from db.models import DocumentCategory, IndexStatus, User, UserDocument
 from db.session import get_db
 from parsers.factory import SUPPORTED_EXTENSIONS
+from core.timefmt import utc_iso
 
 router = APIRouter(prefix="/my-documents", tags=["my-documents"])
 
@@ -67,9 +68,9 @@ def _serialize(d: UserDocument) -> UserDocumentOut:
         description=d.description,
         status=d.status.value if d.status else "queued",
         status_message=d.status_message,
-        indexed_at=d.indexed_at.isoformat() + "Z" if d.indexed_at else None,
-        created_at=d.created_at.isoformat() + "Z" if d.created_at else None,
-        expires_at=d.expires_at.isoformat() + "Z" if d.expires_at else None,
+        indexed_at=utc_iso(d.indexed_at),
+        created_at=utc_iso(d.created_at),
+        expires_at=utc_iso(d.expires_at),
     )
 
 

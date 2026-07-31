@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from api.deps import get_current_user
 from db.models import Conversation, KnowledgeDocument, User, UserDocument, UserRole
 from db.session import get_db
+from core.timefmt import utc_iso
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -85,7 +86,7 @@ def search(
             id=str(c.id),
             title=c.title,
             snippet=_snippet_from_messages(c.messages, term),
-            updated_at=(c.updated_at or c.created_at).isoformat() + "Z" if (c.updated_at or c.created_at) else "",
+            updated_at=utc_iso(c.updated_at or c.created_at) or "",
         )
         for c in conv_rows
     ]
