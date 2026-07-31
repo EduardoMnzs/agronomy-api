@@ -244,3 +244,57 @@ def test_patch_reflete_na_listagem_e_nas_tags(client, docs, auth_as):
 
     assert "nova-tag" in client.get("/knowledge/tags").json()
     assert _names(client.get("/knowledge", params={"tags": "nova-tag"})) == ["Guia Herbicidas"]
+
+
+# ── PATCH: reatribuir responsável ─────────────────────────────────────────────
+
+def test_patch_reatribui_responsavel(client, docs, db, make_user, auth_as):
+    """Admin sobe arquivo em nome de outra pessoa; a atribuição automática grava
+    quem fez o upload, não o autor real. Reatribuir corrige isso."""
+    outro = make_user(email="guilherme@test.com", full_name="Guilherme Panes")
+    auth_as(docs["admin"])
+    doc_id = docs["docs"][0].id
+
+    resp = client.patch(f"/knowledge/{doc_id}", json={"indexed_by": outro.id})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["indexed_by_name"] == "Guilherme Panes"
+
+    # persistiu de fato
+    from db.models import KnowledgeDocument
+    db.expire_all()
+    assert db.get(KnowledgeDocument, doc_id).indexed_by == outro.id
+
+
+def test_patch_reatribuicao_aparece_na_listagem(client, docs, make_user, auth_as):
+    outro = make_user(email="g2@test.com", full_name="Guilherme Panes")
+    auth_as(docs["admin"])
+    doc_id = docs["docs"][0].id
+    client.patch(f"/knowledge/{doc_id}", json={"indexed_by": outro.id})
+
+    by_id = {d["id"]: d for d in client.get("/knowledge").json()}
+    assert by_id[doc_id]["indexed_by_name"] == "Guilherme Panes"
+
+
+def test_patch_responsavel_inexistente_rejeitado(client, docs, auth_as):
+    auth_as(docs["admin"])
+    doc_id = docs["docs"][0].id
+    resp = client.patch(f"/knowledge/{doc_id}", json={"indexed_by": 999999})
+    assert resp.status_code == 400
+    assert "responsável não encontrado" in resp.json()["detail"]
+
+
+def test_patch_sem_indexed_by_preserva_responsavel(client, docs, auth_as):
+    """Campo ausente não deve zerar a atribuição existente."""
+    auth_as(docs["admin"])
+    doc_id = docs["docs"][0].id
+    resp = client.patch(f"/knowledge/{doc_id}", json={"name": "Outro Nome"})
+    assert resp.status_code == 200
+    assert resp.json()["indexed_by_name"] == "Ana Souza"
+
+
+def test_patch_reatribuicao_exige_admin(client, docs, make_user, auth_as):
+    comum = make_user(email="comum2@test.com", role=UserRole.user, full_name="Bia")
+    outro = make_user(email="g3@test.com", full_name="Guilherme Panes")
+    auth_as(comum)
+    doc_id = docs["docs"][0].id
+    assert client.patch(f"/knowledge/{doc_id}", json={"indexed_by": outro.id}).status_code == 403
