@@ -35,10 +35,15 @@ baixar a árvore inteira.
 '5,8', '12'). NUNCA peça o documento inteiro. Se errar, tente outro range \
 com base no que leu.
 6. Antes de cada chamada de ferramenta, produza UMA frase explicando o motivo.
-7. Quando tiver evidência suficiente, responda em português SEM chamar mais \
+7. OBRIGATÓRIO: chame get_page_content em pelo menos UMA página antes de \
+responder, mesmo em perguntas panorâmicas do tipo "o que fala neste documento". \
+Títulos e resumos da árvore NÃO servem como fonte — só página lida serve. \
+Se a pergunta é ampla, leia a página de uma seção representativa.
+8. Quando tiver evidência suficiente, responda em português SEM chamar mais \
 ferramentas. A resposta final deve:
    - Citar cada fato com marcadores inline no formato [doc_id:página], por \
 exemplo [3:27] para o documento de id 3 na página 27. \
+SEMPRE inclua a página: `[3]` sozinho NÃO é citação válida e será descartado. \
 NUNCA cite um doc_id que não esteja no catálogo de documentos disponíveis ou \
 que você não tenha lido via get_page_content. Se não tiver evidência, responda \
 sem marcador de citação.
@@ -423,6 +428,9 @@ def run_agent(
         }
     ]
 
+    # Cobrança de leitura feita? Só uma vez, para não entrar em laço.
+    nudged_to_read = False
+
     for step in range(settings.runtime_get("AGENT_MAX_TOOL_CALLS", settings.AGENT_MAX_TOOL_CALLS)):
         msg = tool_complete(
             messages=messages,
@@ -449,6 +457,27 @@ def run_agent(
 
         if not tool_calls:
             final = msg.content or ""
+            # Toda afirmação precisa de fonte rastreável. Em pergunta panorâmica
+            # ("o que fala neste documento?") o modelo tende a responder só com
+            # os títulos e resumos da árvore, sem chamar get_page_content — e
+            # então não existe página para citar, a resposta sai sem fonte e os
+            # marcadores viram links mortos.
+            #
+            # A regra vive aqui e não só no prompt porque instrução de prompt o
+            # modelo ignora quando "já sabe" a resposta. Cobramos UMA vez; se
+            # ainda assim ele não ler nada, aceitamos para não travar a consulta.
+            if not trace.pages_read and not nudged_to_read:
+                nudged_to_read = True
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "Você respondeu sem abrir nenhuma página, então não há "
+                        "fonte rastreável. Chame get_page_content em pelo menos "
+                        "uma página que embase os pontos principais e depois "
+                        "responda citando [doc_id:página]."
+                    ),
+                })
+                continue
             return AgentResult(answer=final, trace=trace, model_used=used_model)
 
         for tc in tool_calls:
