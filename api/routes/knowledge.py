@@ -374,6 +374,10 @@ def download_knowledge_file(
 class KnowledgeDocumentUpdate(BaseModel):
     name: str | None = None
     tags: list[str] | None = None
+    # Reatribuir o responsável pela indexação. Necessário quando um admin sobe o
+    # arquivo em nome de outra pessoa — a atribuição automática registra quem fez
+    # o upload, não o autor real do documento.
+    indexed_by: int | None = None
 
 
 @router.patch("/{doc_id}", response_model=KnowledgeDocumentOut)
@@ -396,10 +400,18 @@ def update_knowledge(
     if body.tags is not None:
         doc.tags = _normalize_tags(body.tags)
 
+    issuer: User | None = None
+    if body.indexed_by is not None:
+        issuer = db.query(User).filter(User.id == body.indexed_by).first()
+        if not issuer:
+            raise HTTPException(status_code=400, detail="Usuário responsável não encontrado")
+        doc.indexed_by = issuer.id
+
     db.commit()
     db.refresh(doc)
 
-    issuer = db.query(User).filter(User.id == doc.indexed_by).first() if doc.indexed_by else None
+    if issuer is None and doc.indexed_by:
+        issuer = db.query(User).filter(User.id == doc.indexed_by).first()
     return _serialize(doc, _display_name(issuer.full_name, issuer.email) if issuer else None)
 
 
