@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from api.deps import get_current_user
 from db.models import Conversation, User
 from db.session import get_db
+from core.timefmt import utc_iso
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -45,8 +46,8 @@ def _summary(c: Conversation) -> ConversationSummary:
         id=str(c.id),
         title=c.title,
         pinned=c.pinned,
-        created_at=c.created_at.isoformat(),
-        updated_at=c.updated_at.isoformat(),
+        created_at=utc_iso(c.created_at),
+        updated_at=utc_iso(c.updated_at),
     )
 
 
@@ -80,7 +81,7 @@ def get_conversation(conv_id: str, db: Session = Depends(get_db), user: User = D
         title=conv.title,
         pinned=conv.pinned,
         messages=[MessageOut(**m) for m in (conv.messages or [])],
-        created_at=conv.created_at.isoformat(),
+        created_at=utc_iso(conv.created_at),
     )
 
 

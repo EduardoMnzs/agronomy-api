@@ -19,6 +19,7 @@ from core.config import settings
 from db.models import DocumentCategory, IndexStatus, KnowledgeDocument, QueryLog, User
 from db.session import get_db
 from parsers.factory import SUPPORTED_EXTENSIONS
+from core.timefmt import utc_iso
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
@@ -124,7 +125,7 @@ def _serialize(d: KnowledgeDocument, indexed_by_name: str | None = None) -> Know
         category=d.category.value if d.category else "outro",
         tags=list(d.tags or []),
         description=d.description,
-        indexed_at=d.indexed_at.isoformat() if d.indexed_at else None,
+        indexed_at=utc_iso(d.indexed_at),
         indexed_by_name=indexed_by_name,
         status=d.status.value if d.status else "queued",
         status_message=d.status_message,

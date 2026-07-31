@@ -14,6 +14,7 @@ from db.models import SessionDocument, User
 from db.session import get_db
 from parsers.factory import SUPPORTED_EXTENSIONS
 from parsers.safety import UnsafeFileError
+from core.timefmt import utc_iso
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -41,8 +42,8 @@ def list_documents(db: Session = Depends(get_db), user: User = Depends(get_curre
             id=d.id,
             original_filename=d.original_filename,
             file_type=d.file_type,
-            created_at=d.created_at.isoformat(),
-            expires_at=d.expires_at.isoformat() if d.expires_at else None,
+            created_at=utc_iso(d.created_at),
+            expires_at=utc_iso(d.expires_at),
         )
         for d in docs
     ]
@@ -88,8 +89,8 @@ def upload_document(
         id=doc.id,
         original_filename=doc.original_filename,
         file_type=doc.file_type,
-        created_at=doc.created_at.isoformat(),
-        expires_at=doc.expires_at.isoformat() if doc.expires_at else None,
+        created_at=utc_iso(doc.created_at),
+        expires_at=utc_iso(doc.expires_at),
     )
 
 
